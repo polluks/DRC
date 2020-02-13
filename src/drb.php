@@ -1,7 +1,8 @@
 <?php
-
-
-
+// (C) Uto & Jose Manuel Ferrer 2019 - This code is released under the GPL v3 license
+// To build the backend of DAAD reborn compiler I have had aid from Jose Manuel Ferrer Ortiz's DAAD database code,
+// which he glently provided me. In some cases the code has been even copied and pasted, so that's why he is also
+// in the copyright notice above. Thanks Jose Manuel for this invaluable aid.
 
 global $adventure;
 global $xMessageOffsets;
@@ -10,19 +11,28 @@ global $maxFileSizeForXMessages;
 
 $xMessageSize = 0;
 
-// (C) Uto & Jose Manuel Ferrer 2019 - This code is released under the GPL v3 license
-// To build the backend of DAAD reborn compiler I have had aid from Jose Manuel Ferrer Ortiz's DAAD database code,
-// which he glently provided me. In some cases the code has been even copied and pasted, so that's why he is also
-// in the copyright notice above. Thanks Jose Manuel for this invaluable aid.
-
-
 define('FAKE_DEBUG_CONDACT_CODE',220);
 define('FAKE_USERPTR_CONDACT_CODE',256);    
 define('XMES_OPCODE', 128);
 define('XPICTURE_OPCODE',130);
 define('XSAVE_OPCODE',131);
 define('XLOAD_OPCODE',132);
+define('XPART_OPCODE',133);
+define('XPLAY_OPCODE',134);
+define('XBEEP_OPCODE',135);
+define('XSPLITSCR_OPCODE',136);
+define('XUNDONE_OPCODE',137);
+
+
+define('PAUSE_OPCODE',  35);
 define('EXTERN_OPCODE', 61);
+define('BEEP_OPCODE',   64);
+define('AT_OPCODE', 0);
+
+define('XPLAY_OCTAVE', 0);
+define('XPLAY_VOLUME', 1);
+define('XPLAY_LENGTH', 2);
+define('XPLAY_TEMPO',  3);
 
 //================================================================= filewrite ========================================================
 
@@ -158,8 +168,8 @@ function generateTokens(&$adventure, &$currentAddress, $outputFileHandler, $hasT
             } 
             else if ($adventure->verbose)
             {
-                if ($tokenSavings[$j]==0) echo "Token [" . $compressionData->tokens[$j] . "] won't be used cause it was not used by any text.\n";
-                                     else echo "Token [" . $compressionData->tokens[$j] . "] won't be used cause using it wont save any bytes, but waste ".abs($tokenSavings[$j])." byte.\n";
+                if ($tokenSavings[$j]==0) echo "Warning: token [" . $compressionData->tokens[$j] . "] won't be used cause it was not used by any text.\n";
+                                     else echo "Warning: token [" . $compressionData->tokens[$j] . "] won't be used cause using it wont save any bytes, but waste ".abs($tokenSavings[$j])." byte.\n";
             } 
         }
         $savings = $totalSaving;
@@ -216,7 +226,7 @@ class daadToChr
 var $conversions = array('ª', '¡', '¿', '«', '»', 'á', 'é', 'í', 'ó', 'ú', 'ñ', 'Ñ', 'ç', 'Ç', 'ü', 'Ü');
 }
 define('VERSION_HI',0);
-define('VERSION_LO',14);
+define('VERSION_LO',16);
 
 
 function summary($adventure)
@@ -376,15 +386,12 @@ function getXMessageFileSizeByTarget($target, $adventure)
     {
         case 'ZX'  : return 64; 
         case 'MSX' : return 64; 
+        case 'PCW' : return 64; 
         case 'MSX2': return 16; 
         case 'CPC' : return 2;
         case 'C64' : return 2;
-          
-/*        case 'C64': 
-          return 2;
-        case 'CPC': 
-          return 4;
-*/        default: return 0;
+        case 'CP4' : return 2;        
+        default: return 0;
     }
 }
 
@@ -676,16 +683,18 @@ function getCondactsHash($adventure, $condacts, $from)
 
 function checkMaluva($adventure)
 {
+    $count = 0;
     foreach ($adventure->externs as $extern)
     {
-        if (strrpos($extern->FilePath, ('MLV_')) !== false) return true;
+        if (strrpos($extern->FilePath, ('MLV_')) !== false) $count++;
     }
-    return false;
+    return $count;
 }
 
 function generateProcesses($adventure, &$currentAddress, $outputFileHandler, $isLittleEndian, $target)
 {     
-    //PASS ZERO, CHECK THE PROCESSES AND REPLACE XMESSAGE WITH PROPER EXTERN CALLS. MAKE SURE MALUVA IS INCLUDED
+    //PASS ZERO, CHECK THE PROCESSES AND REPLACE SOME CONDACTS LIKE XMESSAGE WITH PROPER EXTERN CALLS. MAKE SURE MALUVA IS INCLUDED
+    //           ALSO FIX SOME BUGS LIKE ZX BEEP CONDACT WRONG ORDER
     for ($procID=0;$procID<sizeof($adventure->processes);$procID++)
     {
         $process = $adventure->processes[$procID];
@@ -706,7 +715,7 @@ function generateProcesses($adventure, &$currentAddress, $outputFileHandler, $is
                     $condact->Param1 = $offset & 0xFF; // Offset LSB
                     $condact->Param3 = ($offset & 0xFF00) >> 8; // Offset MSB
                     $condact->Condact = 'EXTERN';
-                } 
+                }
                 else if ($condact->Opcode == XPICTURE_OPCODE)
                 {
                     $condact->Opcode = EXTERN_OPCODE;
@@ -714,6 +723,16 @@ function generateProcesses($adventure, &$currentAddress, $outputFileHandler, $is
                     $condact->Param2 = 0; // Maluva function 0
                     $condact->Condact = 'EXTERN';
                     if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XPICTURE condact requires Maluva Extension');
+                }
+                else if ($condact->Opcode == XUNDONE_OPCODE)
+                {
+                    $condact->Opcode = EXTERN_OPCODE;
+                    $condact->NumParams=2;
+                    $condact->Param1 = 0; // Useless but it must be set
+                    $condact->Param2 = 7; // Maluva function 7
+                    $condact->Indirection1 = 0; // Also useless, but it must be set
+                    $condact->Condact = 'EXTERN';
+                    if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XUNDONE condact requires Maluva Extension');
                 }
                 else if ($condact->Opcode == XSAVE_OPCODE)
                 {
@@ -723,13 +742,105 @@ function generateProcesses($adventure, &$currentAddress, $outputFileHandler, $is
                     $condact->Condact = 'EXTERN';
                     if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XSAVE condact requires Maluva Extension');
                 }
-                else if ($condact->Opcode == XSAVE_OPCODE)
+                else if ($condact->Opcode == XLOAD_OPCODE)
                 {
                     $condact->Opcode = EXTERN_OPCODE;
                     $condact->NumParams=2;
                     $condact->Param2 = 2; // Maluva function 2
                     $condact->Condact = 'EXTERN';
                     if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XLOAD condact requires Maluva Extension');
+                }
+                else if ($condact->Opcode == XPART_OPCODE)
+                {
+                    $condact->Opcode = EXTERN_OPCODE;
+                    $condact->NumParams=2;
+                    $condact->Param2 = 4; // Maluva function 4
+                    $condact->Condact = 'EXTERN';
+                    if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XPART condact requires Maluva Extension');
+                }
+                else if ($condact->Opcode == XBEEP_OPCODE)
+                {
+                    if (($condact->Param2<48) || ($condact->Param2>238)) 
+                    {
+                        $condact->Opcode = PAUSE_OPCODE;
+                        $condact->Condact = 'PAUSE';
+                        $condact->NumParams = 1;
+                    }
+                    else
+                    {
+                        $condact->Opcode = EXTERN_OPCODE;
+                        $condact->NumParams=3;
+                        $condact->Param3 = $condact->Param2; 
+                        $condact->Param2 = 5; // Maluva function 5
+                        $condact->Condact = 'EXTERN'; // XBEEP A B  ==> EXTERN A 5 B  (3 parameters)
+                        if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XBEEP condact requires Maluva Extension');
+                    }
+                }
+                else if ($condact->Opcode == BEEP_OPCODE)
+                {
+                    
+                    // Out of range values, replace BEEP with PAUSE
+                    if (($condact->Param2<48) || ($condact->Param2>238)) 
+                    {
+                        $condact->Opcode = PAUSE_OPCODE;
+                        $condact->Condact = 'PAUSE';
+                        $condact->NumParams = 1;
+                    }
+                    else
+                    if ($target=='ZX')  // Zx Spectrum interpreter expects BEEP parameters in opposite order
+                    {
+                        $tmp = $condact->Param1;
+                        $condact->Param1 = $condact->Param2;
+                        $condact->Param2 = $tmp;
+                    }
+                    else
+                    if (($target=='MSX') || ($target=='CPC')) // Convert BEEP to XBEEP
+                    {
+                        $condact->Opcode = EXTERN_OPCODE;
+                        $condact->NumParams=3;
+                        $condact->Param3 = $condact->Param2; 
+                        $condact->Param2 = 5; // Maluva function 5
+                        $condact->Condact = 'EXTERN'; // XBEEP A B  ==> EXTERN A 5 B  (3 parameters)
+                        if ((!CheckMaluva($adventure)) && ($target!='MSX2')) Error('XBEEP condact requires Maluva Extension');
+                    }
+                }
+                else if ($condact->Opcode == XPLAY_OPCODE)
+                {
+                    // Default values
+                    $values = array(XPLAY_OCTAVE => 4, XPLAY_VOLUME => 8, XPLAY_LENGTH =>4, XPLAY_TEMPO => 120);
+                    $xplay = array();
+                    $mml = strtoupper($adventure->other_strings[$condact->Param1]->Text);
+
+                    while ($mml) {
+                        $next = strpbrk(substr($mml, 1), "ABCDEFGABLNORTVSM<>");
+                        if ($next!==false)
+                            $note = substr($mml, 0, strlen($mml)-strlen($next));
+                        else 
+                            $note = $mml;
+                        $beep = mmlToBeep($note, $values, $target);
+                        if ($beep!==NULL) $xplay[] = $beep;
+                        $mml = $next;
+                    }
+                    array_splice($entry->condacts, $condactID, 1, $xplay);
+                    if (sizeof($xplay)) $condactID --; // As the current condact has been replaced with a sequentia of BEEPs, we move the pointer one step back to make sure the changes made for BEEP in ZX Spectrum applies
+                }
+                else if ($condact->Opcode == XSPLITSCR_OPCODE)
+                {
+                    $condact->Opcode = EXTERN_OPCODE;
+                    $condact->NumParams=2;
+                    $condact->Param2 = 6; // Maluva function 6. Notice in case this condact is generated for a machine not supporting split screen it will just do nothing
+                    $condact->Condact = 'EXTERN'; // XSPLITSCR X  ==> EXTERN X 6 
+                    if ((CheckMaluva($adventure)<2) && ($target=='CPC'))  Error('XSPLITSCR condact requires Maluva Standard Extension and CPC Interrupt Extension for running under CPC');               
+                    if ((CheckMaluva($adventure)<1) && ($target=='C64'))  Error('XSPLITSCR condact requires Maluva extension');               
+                    if ((CheckMaluva($adventure)<1) && ($target=='CP4'))  Error('XSPLITSCR condact requires Maluva extension');               
+                    if (($target!='MSX2') && ($target!='CPC')  && ($target!='C64')   && ($target!='CP4')  ) // If target does not support XSPLITSCR, replaces condact with "AT @38" (always true)
+                    {
+                        $condact->Opcode = AT_OPCODE;
+                        $condact->Condact = 'AT';
+                        $condact->Indirection1 = 1;
+                        $condact->Param1 = 38;
+                        $condact->NumPrams=1;
+                    }
                 }
             }
         }
@@ -845,6 +956,20 @@ function generateProcesses($adventure, &$currentAddress, $outputFileHandler, $is
                 if (!$adventure->classicMode) if (in_array($opcode, $terminatorOpcodes)) 
                 {
                     $terminatorFound = true;
+                    if ($adventure->verbose)
+                    {
+                        if ($condactID != sizeof($entry->condacts) -1 ) // Terminator found, but additional condacts exists in the entry
+                        {
+                            $humanEntryID =$entryID + 1; // entryID increased so for human readability entries are from #1 to #n, not from #0 to #n
+                            $verb = $entry->Verb;
+                            $noun = $entry->Noun;
+                            $condactName = $entry->condacts[$condactID+1]->Condact;
+                            $terminatorName = $entry->condacts[$condactID]->Condact;
+                            $entryText = $entry->Entry;
+                            $dumped = ($adventure->classicMode) ? "has been" : "hasn't been";
+                            echo "Warning: Condact '$condactName' found after a terminator '$terminatorName' in entry #$humanEntryID ($entryText) at process #$procID . Condact $dumped dumped to DDB file.\n";
+                        }
+                    }
                     break; // If a terminator condact found, no more condacts in the entry will be ever executed, so we break the loop (normally there won't be more condacts anyway)
                 }
             }
@@ -892,7 +1017,7 @@ function generateProcesses($adventure, &$currentAddress, $outputFileHandler, $is
 
 function isValidTarget($target)
 {
-    return ($target == 'ZX') || ($target == 'CPC') ||  ($target == 'C64') ||  ($target == 'PCW') ||  ($target == 'MSX') ||  ($target == 'AMIGA') ||  ($target == 'PC') ||  ($target == 'ST') || ($target == 'MSX2');
+    return ($target == 'ZX') || ($target == 'CPC') ||  ($target == 'C64') ||  ($target == 'PCW') ||  ($target == 'MSX') ||  ($target == 'AMIGA') ||  ($target == 'PC') ||  ($target == 'ST') || ($target == 'MSX2') || ($target=='CP4');
 }
 
 function isValidSubtarget($target, $subtarget)
@@ -929,7 +1054,8 @@ function getMachineIDByTarget($target)
   if ($target=='ST')    return 0x05; else
   if ($target=='AMIGA') return 0x06; else
   if ($target=='PCW')   return 0x07; else
-  if ($target=='MSX2')  return 0x0F;        // New target for @ishwin interpreter
+  if ($target=='CP4')   return 0x0E; else   // New target for Commodore Plus/4 interpreter
+  if ($target=='MSX2')  return 0x0F;        // New target for @ishwin MSX2 interpreter
 };  
 
 function getBaseAddressByTarget($target)
@@ -938,6 +1064,7 @@ function getBaseAddressByTarget($target)
   if ($target=='MSX') return 0x0100; else
   if ($target=='CPC') return 0x2880; else
   if ($target=='PCW') return 0x100; else
+  if ($target=='CP4') return 0x7080; else
   if ($target=='C64') return 0x3880; else return 0;
 };
 
@@ -960,14 +1087,14 @@ function Syntax()
 {
     
     echo("SYNTAX: php drb <target> [subtarget] <language> <inputfile> [outputfile] [options]\n\n");
-    echo("+ <target>: target machine, should be 'ZX', 'CPC', 'C64', 'MSX', 'MSX2', 'PCW', 'PC', 'ST' or 'AMIGA'.\n");
+    echo("+ <target>: target machine, should be 'ZX', 'CPC', 'C64', 'CP4', 'MSX', 'MSX2', 'PCW', 'PC', 'ST' or 'AMIGA'. Just to clarify, CP4 stands for Commodore Plus/4\n");
     echo("+ [subtarget]: some targets need to specify a subtarget. For MSX2: 5_6, 5_8, 6_6, 6_8, 7_7 and 7_8 (being the video mode and the character with in pixels). PC has the following: VGA, EGA, CGA and TEXT.\n");
     echo("+ <language>: game language, should be 'EN' or 'ES' (english or spanish).\n");
     echo("+ <inputfile>: a json file generated by DRF.\n");
     echo("+ [outputfile] : (optional) name of output file. If absent, same name of json file would be used, with DDB extension.\n");
     echo("+ [options]: one or more of the following:\n");
     echo ("          -v  : verbose output\n");
-    echo ("          -ch : Prepend C64 header to DDB file (ch stands for 'Commodore header')\n");
+    echo ("          -ch : Prepend C64 or CP4 header to DDB file (ch stands for 'Commodore header')\n");
     echo ("          -3h : Prepend +3 header to DDB file (3h stands for 'Three header')\n");
     echo ("          -c  : Forced classic mode\n");
     echo ("          -d  : Forced debug mode\n");
@@ -1071,12 +1198,13 @@ function prependPlus3HeaderToDDB($outputFileName)
     rename("prepend.tmp" ,$outputFileName);
 }
 
-function prependC64HeaderToDDB($outputFileName)
+function prependC64HeaderToDDB($outputFileName, $target)
 {
     $inputHandle = fopen($outputFileName, 'r');
     $outputHandle = fopen("prepend.tmp", "w");
-    fputs($outputHandle, chr(0x80), 1);
-    fputs($outputHandle, chr(0x38), 1);
+    $baseAddress = getBaseAddressByTarget($target);
+    fputs($outputHandle, chr($baseAddress & 0xFF), 1);
+    fputs($outputHandle, chr(($baseAddress>>8) & 0XFF), 1); 
     while (!feof($inputHandle))
     {
         $c = fgetc($inputHandle);
@@ -1086,6 +1214,114 @@ function prependC64HeaderToDDB($outputFileName)
     fclose($outputHandle);
     unlink($outputFileName);
     rename("prepend.tmp" ,$outputFileName);
+}
+
+//********************************************** XPLAY *************************************************************** */
+
+function mmlToBeep($note, &$values, $target)
+{
+    // These targets don't support BEEP condact
+    if (($target=='ST') || ($target=='AMIGA') ||($target=='PC') || ($target=='PCW')) return NULL;
+
+    $condact = NULL;
+    $noteIdx = array('C'=>0, 'C#'=>1, 'D'=>2, 'D#'=>3, 'E'=>4,  'F'=>5, 'F#'=>6, 'G'=>7, 'G#'=>8, 'A'=>9, 'A#'=>10, 'B'=>11,
+                     'C+'=>1,         'D+'=>3,         'E+'=>5, 'F+'=>6,         'G+'=>8,         'A+'=>10,         'B+'=>12,
+                     'C-'=>-1,        'D-'=>1,         'E-'=>3, 'F-'=>4,         'G-'=>6,         'A-'=>8,          'B-'=>10);
+    switch ($target)
+    {
+        case 'ZX': $baseLength = 195; break;
+        case 'C64':
+        case 'CP4': $baseLength = 205; break;
+        default: $baseLength = 200; // Full note (1 sec)
+    }
+    
+
+    $cmd = $note[0];
+    // ############ Note: [A-G][#:halftone][num:length][.:period]
+    if ($cmd>='A' && $cmd<='G') {
+        $period = 1;                        //Period increase length
+        while (substr($note, -1)=='.') {
+            $period *= 1.5;
+            $note = substr($note, 0, strlen($note)-1); 
+        }
+        $length = $values[XPLAY_LENGTH] / $period;
+        
+        $end = 1;                           //Note index
+        if (@$note[1]=='#' || @$note[1]=='-' || @$note[1]=='+') $end++;
+        $idx = $noteIdx[substr($note, 0, $end)];
+        
+        if ($end<strlen($note))             //Length
+            $length = intval(substr($note, $end)) / $period;
+
+        $condact = new stdClass();
+        if (($target=='MSX') || ($target=='CPC')) $condact->Opcode = XBEEP_OPCODE; else $condact->Opcode = BEEP_OPCODE;
+        $condact->NumParams = 2;
+        $condact->Param1 = intval(round($baseLength * (120 / $values[XPLAY_TEMPO]) / $length));
+        $condact->Param2 = 24 + $values[XPLAY_OCTAVE]*24 + $idx*2;
+        if (($target == 'C64') || ($target == 'CP4')) $condact->Param2 -= 24; // C64/CP4 interpreter pitch it's too high otherwise
+        $condact->Indirection1 = 0;
+        if (($target=='MSX') ||($target=='CPC')) $condact->Condact = 'XBEEP'; else $condact->Condact = 'BEEP';
+    } else
+    // ############ Note lenght [1-64] (1=full note, 2=half note, 3=third note, ..., default:4)
+    if ($cmd=='L') {
+        $values[XPLAY_LENGTH] = intval(substr($note, 1));
+    } else
+    // ############ Pause [1-64] (1=full pause, 2=half pause, 3=third pause, ...)
+    if ($cmd=='R') {
+        $period = 1;
+        while (substr($note, -1)=='.') {
+            $period *= 1.5;
+            $note = substr($note, 0, strlen($note)-1);
+        }
+        $length = intval(substr($note, 1)) / $period;
+
+        $condact = new stdClass();
+        $condact->Opcode = PAUSE_OPCODE;
+        $condact->NumParams = 1;
+        $condact->Param1 = intval(round($baseLength * (120 / $values[XPLAY_TEMPO]) / $length));
+        $condact->Indirection1 = 0;
+        $condact->Condact = 'PAUSE';
+    } else
+    // ############ Note Pitch [0-96]
+    if ($cmd=='N') {
+        $period = 1;                        //Period increase length
+        while (substr($note, -1)=='.') {
+            $period *= 1.5;
+            $note = substr($note, 0, strlen($note)-1);
+        }
+        $length = $values[XPLAY_LENGTH] / $period;
+
+        $idx = intval(@substr($note, 1));    //Note index
+
+        $condact = new stdClass();
+        if (($target=='MSX') || ($target=='CPC')) $condact->Opcode = XBEEP_OPCODE; else $condact->Opcode = BEEP_OPCODE;
+        $condact->NumParams = 2;
+        $condact->Param1 = intval(round($baseLength * (120 / $values[XPLAY_TEMPO]) / $length));
+        $condact->Param2 = 48 + $idx*2;
+        $condact->Indirection1 = 0;
+        if (($target=='MSX') ||($target=='CPC')) $condact->Condact = 'XBEEP'; else $condact->Condact = 'BEEP';
+    } else
+    // ############ Octave [1-8] (default:4)
+    if ($cmd=='O') {
+        $values[XPLAY_OCTAVE] = intval(substr($note, 1));
+    } else
+    // ############ Tempo [32-255] (indicates the number of quarter notes per minute, default:120)
+    if ($cmd=='T') {
+        $values[XPLAY_TEMPO] = (intval(substr($note, 1)) & 255);
+    } else
+    // ############ Volume [0-15] (default:8)
+    if ($cmd=='V') {
+        $values[XPLAY_VOLUME] = intval(substr($note, 1)) & 15;  //[**Not supported by original BEEP DAAD condact**]
+    } else
+    // ############ Decreases one octave
+    if ($cmd=='<') {
+        if ($values[XPLAY_OCTAVE]>1) $values[XPLAY_OCTAVE]--;
+    } else
+    // ############ Increases one octave
+    if ($cmd=='>') {
+        if ($values[XPLAY_OCTAVE]<8) $values[XPLAY_OCTAVE]++;
+    }
+    return $condact;
 }
 
 
@@ -1157,7 +1393,7 @@ if ($adventure->verbose) echo ("Verbose mode on\n");
 
 
 // Check parameters
-if (($target!='C64') && ($adventure->prependC64Header)) Error('Adding C64 header was requested but target is not C64');
+if ( ($target!='C64')&&($target!='CP4') && ($adventure->prependC64Header)) Error('Adding C64 header was requested but target is not C64 or CP4');
 if (($target!='ZX')  && ($adventure->prependPlus3Header)) Error('Adding +3DOS header was requested but target is not ZX Spectrum');
 
 // Create the vectors for extens and USRPTR
@@ -1381,7 +1617,7 @@ writeWord($outputFileHandler, $objectWeightAndAttrOffset, $isLittleEndian);
 // Extra object attributes 
 writeWord($outputFileHandler, $objectExtraAttrOffset, $isLittleEndian);
 // File length 
-$fileSize = $currentAddress;
+$fileSize = $currentAddress;// - $baseAddress;
 writeWord($outputFileHandler, $fileSize, $isLittleEndian);
 for($i=0;$i<13;$i++)
     writeWord($outputFileHandler, $adventure->extvec[$i],$isLittleEndian);
@@ -1394,8 +1630,8 @@ if ($xMessageSize) echo "XMessages size is $xMessageSize bytes in files of ". $m
 if ($textSavings>0) echo "Text compression saving: $textSavings bytes.\n";
 if ($adventure->prependC64Header)
 {
-    if ($adventure->verbose) echo ("Adding C64 header\n");
-    prependC64HeaderToDDB($outputFileName);
+    if ($adventure->verbose) echo ("Adding Commodore header\n");
+    prependC64HeaderToDDB($outputFileName, $target);
 } 
 
 if ($adventure->prependPlus3Header)

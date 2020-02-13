@@ -1,3 +1,5 @@
+// (C) Uto 2019 - This code is released under the GPL v3 license
+
 PROGRAM DRC;
 {$MODE OBJFPC}
 {$I-}
@@ -10,16 +12,22 @@ PROCEDURE SYNTAX();
 VAR AppName :String;
 BEGIN
 	AppName := ChangeFileExt(ExtractFileName(ParamStr(0)),'');
-	WriteLn('Syntax: ', AppName, ' <target> [subtarget] <file.DSF> [output.json] [additional symbols]');
+	WriteLn('Syntax: ', AppName, ' <target> [subtarget] <file.DSF> [output.json] [options] [additional symbols]');
   WriteLn();
 	WriteLn('file.DSF is a DAAD', ' ', version_hi, '.', version_lo, ' source file.');
   WriteLn();
-	WriteLn('<target> is the target machine, one of this list: ZX, CPC, C64, MSX, MSX2, PCW, PC, AMIGA or ST. The target machine will be added as if there were a ''#define <target> '' in the code, so you can make the code depend on target platform.');
+	WriteLn('<target> is the target machine, one of this list: ZX, CPC, C64, CP4, MSX, MSX2, PCW, PC, AMIGA or ST. The target machine will be added as if there were a ''#define <target> '' in the code, so you can make the code depend on target platform. Just to clarify, CP4 stands for Commodore Plus/4');
   WriteLn();
 	WriteLn('[subtarget] is an parameter only required when the target is ZX, MSX2 or PC. Will define the internal variable COLS, which can later be used in DAAD processes. For MSX2 values can be 5_6, 5_8, 6_6, 6_8, 7_6, 7_8, 8_6 or 8_8. The first number is the video mode (5-8), the second one is the characters width in pixels (6 or 8). For PC values can be VGA, EGA, CGA or TEXT. For ZX the values can be PLUS3, ESXDOS or NEXT.');
   WriteLn('Please notice subtarget for ZX is only relevant if you use Maluva, if you don''t use it or you don''t know what it is, choose any of the targets, i.e. plus3');
   WriteLn();
 	WriteLn('[output.json] is optional file name for output json file, if missing, '+AppName+' will just use same name of input file, but with .json extension.');
+  WriteLn();
+  WriteLn('[options] may be or more of the following:');
+  WriteLn('          -verbose: verbose output');
+  WriteLn('          -no-semantic: DRF won''t make a semantic analysis so condacts like MESSAGE x where message #x does not exist will be ignored.');
+  WriteLn('          -semantic-warnings: DRF will just show semantic errors as warnings, but won''t stop compilation');
+  WriteLn('          -force-normal-messages: all xmessages will be treated as normal messages');
   WriteLn();
 	WriteLn('[additional symbols] is an optional comma separated list of other symbols that would be created, so for instance if that parameter is "p3", then #ifdef "p3" will be true, and if that parameter is "p3,p4" then also #ifdef "p4" would be true.');
 	Halt(1);
@@ -80,6 +88,7 @@ BEGIN
  IF Target = 'PC' THEN Result := getPCColsBySubtarget(SubTarget) ELSE
  IF Target = 'ZX' THEN Result := 42 ELSE
  IF Target = 'C64' THEN Result := 40 ELSE
+ IF Target = 'CP4' THEN Result := 40 ELSE
  IF Target = 'CPC' THEN Result := 40 ELSE
  IF Target = 'MSX' THEN Result := 42 ELSE
  IF Target = 'MSX2' THEN Result := getMSX2ColsBySubtarget(SubTarget) ELSE
@@ -97,7 +106,7 @@ END;
 
  FUNCTION targetUsesDstringsGraphics(Target:AnsiString): Boolean;
  BEGIN
-  Result := (Target='ZX') OR (Target='CPC') OR (Target='C64') OR (Target='MSX');
+  Result := (Target='ZX') OR (Target='CPC') OR (Target='C64') OR (Target='CP4')  OR (Target='MSX');
  END;
 
 // Global vars
@@ -117,6 +126,12 @@ var machine : AnsiString;
     cols: byte;
     i :byte;
 BEGIN
+  IF Verbose THEN
+  BEGIN
+   Write('Target: ', target);
+   IF SubTarget<>'' THEN Write(' | Subtarget:', subtarget);
+   WriteLn;
+  END; 
   Writeln('Reading ' + InputFileName);
   AssignFile(yyinput, InputFileName);
   Reset(yyinput);
@@ -131,7 +146,7 @@ BEGIN
   if (SubTarget<>'') THEN AddSymbol(SymbolList, 'MODE_'+Subtarget, 1);
   machine :=AnsiUpperCase(Target);
   // The target superset BIT8 or BIT16
-  if (machine='ZX') OR (machine='CPC') OR (machine='PCW') OR (machine='MSX') OR (machine='C64') or (MACHINE='MSX2') THEN AddSymbol(SymbolList, 'BIT8', 1);
+  if (machine='ZX') OR (machine='CPC') OR (machine='PCW') OR (machine='MSX') OR (machine='C64') OR (machine='CP4') or (MACHINE='MSX2') THEN AddSymbol(SymbolList, 'BIT8', 1);
   if (machine='PC') OR (machine='AMIGA') OR (machine='ST') THEN   AddSymbol(SymbolList, 'BIT16', 1);
   // add COLS Symbol
   cols := getColsByTarget(Target, SubTarget);
@@ -154,7 +169,6 @@ BEGIN
     if (AuxString<>'') THEN 
     BEGIN
      AddSymbol(SymbolList, AuxString, i);
-     WriteLn('Additional symbol ', AuxString, ' added with value ', i);
     END;
     Inc(i);
   UNTIL AuxString='';
@@ -178,7 +192,7 @@ BEGIN
   if (CurrentYear()<>2018) THEN Write('-', CurrentYear());
   WriteLn();
   // Check Parameters
-  IF (ParamCount()>5) OR (ParamCount()<2) THEN SYNTAX();
+  IF (ParamCount()<2) THEN SYNTAX();
   Target := UpperCase(ParamStr(1));
   NextParam := 2;
   SubTarget := '';
@@ -201,9 +215,40 @@ BEGIN
                               BEGIN
                                 OutputFileName := ChangeFileExt(InputFileName, '.json');
                               END;
-  IF ParamCount>= NextParam THEN AdditionalSymbols := ParamStr(NextParam)
-                            ELSE AdditionalSymbols := '';
-  
+  AdditionalSymbols := '';
+  WHILE ParamCount>= NextParam DO
+  BEGIN
+   AuxString := ParamStr(NextParam);
+   if (copy(AuxString, 1,1)<>'-') THEN AdditionalSymbols := AuxString   // If next parameter starts by '--' it's an option, otherwise it's a symbol list
+                                   ELSE
+                                   BEGIN
+                                    IF AuxString = '-verbose' THEN 
+                                    BEGIN 
+                                      Verbose := true;
+                                      WriteLn('Verbose mode ON'); 
+                                    END ELSE
+                                    IF AuxString = '-no-semantic' THEN 
+                                    BEGIN 
+                                      NoSemantic := true;
+                                      if Verbose THEN WriteLn('Warning: DRF won''t make semantic analysis'); 
+                                    END ELSE
+                                    IF AuxString = '-semantic-warnings' THEN
+                                    BEGIN 
+                                      SemanticWarnings := true; 
+                                      if Verbose THEN WriteLn('Warning: Semantic analysys errors will just generate warnings'); 
+                                    END 
+                                    ELSE
+                                    IF AuxString = '-force-normal-messages' THEN
+                                    BEGIN 
+                                      ForceNormalMessages := true;
+                                      if Verbose THEN WriteLn('Warning: Forced Normal Messages'); 
+                                    END
+                                    ELSE ParamError('Invalid option: ' + AuxString);
+                                   END;
+   Inc(NextParam);
+  END;
+
+  IF NoSemantic AND SemanticWarnings THEN ParamError('You can''t avoid semantic checking and at the same time expect semantic warnings.');
 
   //LoadPlugins(); 
   IF NOT CheckEND(InputFileName) THEN ParamError('Input file has no /END section');
