@@ -4,7 +4,7 @@ UNIT UConstants;
 INTERFACE
 
 CONST version_hi = 0;
-	  version_lo = 16;
+	  version_lo = 27;
 
       LOC_CARRIED = 254;
       LOC_WORN = 253;       
@@ -22,8 +22,10 @@ CONST version_hi = 0;
 
       MAX_PARAMETER_RANGE = 255;
 
+      MAX_LABELS = 1024;
+
       NUM_CONDACTS  =128;
-      NUM_FAKE_CONDACTS = 10;
+      NUM_FAKE_CONDACTS = 14;
 
       MESSAGE_OPCODE = 38;
       MES_OPCODE =77;
@@ -40,10 +42,14 @@ CONST version_hi = 0;
       XBEEP_OPCODE = 135;
       XSPLITSCR_OPCODE = 136;
       XUNDONE_OPCODE=137;
+      XNEXTCLS_OPCODE=138;
+      XNEXTRST_OPCODE=139;
+      XSPEED_OPCODE=140;
       BEEP_OPCODE = 64;
 
       DESC_OPCODE = 19;
       SKIP_OPCODE = 116;
+      PENDINGSKIP_OPCODE = 141;
 
       SYNONYM_OPCODE = 36;
       PREP_OPCODE = 68;
@@ -59,6 +65,7 @@ CONST version_hi = 0;
 
 // Compile options
 VAR ForceNormalMessages : Boolean;
+    ForceXMessages : Boolean;
     NoSemantic : Boolean;
     SemanticWarnings : Boolean;
     Verbose: Boolean;

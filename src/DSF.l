@@ -50,8 +50,10 @@ _				BEGIN  AddToken(TokenList, T_UNDERSCORE, yytext, MaxLongInt, yylineno, yyco
 \/[_,a-zA-Z0-9áéíóúüÁÉÍÓÚÜñÑçÇ]+ BEGIN  AddToken(TokenList, T_LIST_ENTRY, Copy(yytext,2,Length(yytext)-1), MaxLongInt, yylineno, yycolno); END;
 ;.*\n 			BEGIN  END;
 -?[0-9]+        BEGIN  AddToken(TokenList, T_NUMBER, yytext, StrToInt(yytext), yylineno, yycolno); END;
+\$[_,a-zA-Z0-9áéíóúüÁÉÍÓÚÜñÑçÇ]+ BEGIN  AddToken(TokenList, T_LABEL, yytext, MaxLongInt, yylineno, yycolno); END;
+\%[_,a-zA-Z0-9áéíóúüÁÉÍÓÚÜñÑçÇ]+ BEGIN  AddToken(TokenList, T_LOCAL_LABEL, yytext, MaxLongInt, yylineno, yycolno); END;
 [_,a-zA-Z0-9áéíóúüÁÉÍÓÚÜñÑçÇ]+ BEGIN  AddToken(TokenList, T_IDENTIFIER, yytext, MaxLongInt, yylineno, yycolno); END;
 \@				BEGIN  AddToken(TokenList, T_INDIRECT, yytext, MaxLongInt, yylineno, yycolno); END;
 [ \t\n]         BEGIN  END;
-.               BEGIN yyerror('Unexpected character'); Halt(1); END;
+.               BEGIN LexerError(yylineno, yycolno, yytext); Halt(1); END;
 %%

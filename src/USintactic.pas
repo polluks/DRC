@@ -4,18 +4,23 @@ UNIT USintactic;
 
 INTERFACE
 
-USES UTokenList;
+USES UTokenList, ULabelList;
 
 PROCEDURE Sintactic(ATarget, ASubtarget: AnsiString);
+PROCEDURE FixForwardLabels();
+
+// If the lexer finds invalid token will call this one
+PROCEDURE LexerError(yylineno, yycolno: integer; yytext: AnsiString);
 
 var ClassicMode : Boolean;
 	DebugMode : Boolean;
 	Target, Subtarget: AnsiString;
 	MaluvaUsed : Boolean;
+	GlobalNestedIfdefCount: Word;
 
 IMPLEMENTATION
 
-USES sysutils, UConstants, ULexTokens, USymbolList, UVocabularyTree, UMessageList, UCondacts, UConnections, UObjects, UProcess, UProcessCondactList, UCTLExtern,fpexprpars, strings, strutils;
+USES sysutils, UConstants, ULexTokens, USymbolList, UVocabularyTree, UMessageList, UCondacts, UConnections, UObjects, UProcess, UProcessCondactList, UCTLExtern,fpexprpars, strings, strutils, UInclude;
 
 VAR CurrentText: AnsiString;
 	CurrentIntVal : Longint;
@@ -23,20 +28,84 @@ VAR CurrentText: AnsiString;
 	CurrLineno : Longint;
 	CurrColno : Word;
 	CurrTokenPTR: TPTokenList;
-	OnIfdefMode : boolean;
-	OnElse :Boolean;
+	
+
 	
 PROCEDURE SyntaxError(msg: String);
+VAR IncludeData : TIncludeData;
 BEGIN
-  Writeln(CurrLineno,':', CurrColno, ': ', msg,'.');
+  IncludeData := GetIncludeData(CurrLineno);
+  Writeln(IncludeData.OriginalLine,':', CurrColno,':',IncludeData.originalFileName, ': ', msg,'.');
   Halt(1);
 END;
 
 PROCEDURE Warning(msg: String);
+VAR IncludeData : TIncludeData;
 BEGIN
-  Writeln('Warning: ' , CurrLineno,':', CurrColno, ': ', msg,'.');
+  IncludeData := GetIncludeData(CurrLineno);
+  Writeln('Warning: ',IncludeData.OriginalLine,':', CurrColno,':',IncludeData.originalFileName, ': ', msg,'.');
 END;
 
+PROCEDURE LexerError(yylineno, yycolno: integer; yytext: AnsiString);
+BEGIN
+ CurrLineno := yylineno;
+ CurrColno := yycolno;
+ SyntaxError('Unexpected character or string: "'+ yytext+'"');
+END;
+
+PROCEDURE FixForwardLabels();
+var procno, entryno : Word;
+	TempEntriesList : TPProcessEntryList;
+    TempCondactList : TPProcessCondactList;
+    
+BEGIN
+	FOR procno := 0 TO ProcessCount - 1 DO
+	BEGIN
+		TempEntriesList := Processes[procno].entries;
+		entryno := 0;
+		WHILE TempEntriesList<>nil DO
+		BEGIN
+			TempCondactList := TempEntriesList^.Condacts;
+            WHILE TempCondactList<> nil  DO  //  Each condact
+            BEGIN
+				IF (TempCondactList^.Opcode = PENDINGSKIP_OPCODE) THEN
+				BEGIN
+					// Check if forward refence was finally defined
+					IF LabelList[TempCondactList^.Params[0].Value].isForward THEN SyntaxError('Label ' + LabelList[TempCondactList^.Params[0].Value].SkipLabel + ' was referenced but then not defined');
+					// If defined, let's check it's same process
+					IF LabelList[TempCondactList^.Params[0].Value].Process<>procno THEN SyntaxError('Label '+LabelList[TempCondactList^.Params[0].Value].SkipLabel+' was referenced in one process but defined in a different process');
+					// If same process, let´s calculate the jump and see if >128
+					IF LabelList[TempCondactList^.Params[0].Value].Entry - EntryNo > 128 THEN SyntaxError('SKIP using label '+LabelList[TempCondactList^.Params[0].Value].SkipLabel+' trys to jump forward too much, maximum 128 entries jumped allowed');
+					// Ok, now it's all OK, lets replace the PENDINGSKIP for a proper SKIP
+					IF verbose THEN WriteLn('Forward reference of label "' + LabelList[TempCondactList^.Params[0].Value].SkipLabel + '" found at process #' + IntToStr(LabelList[TempCondactList^.Params[0].Value].Process) + ', entry #' + IntToStr(LabelList[TempCondactList^.Params[0].Value].Entry) + '.');
+					TempCondactList^.Opcode := SKIP_OPCODE;
+					TempCondactList^.Params[0].Value := LabelList[TempCondactList^.Params[0].Value].Entry - EntryNo - 1;
+					break;
+				END
+				ELSE
+				IF (TempCondactList^.Opcode AND 512 = 512) THEN // Pending forward local label
+				BEGIN
+					// Check if forward refence was finally defined
+					IF LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].isForward THEN SyntaxError('Local label ' + LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel + ' was referenced but then not defined');
+					// If defined, let's check it's same process
+					IF LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Process<>procno THEN SyntaxError('Local label '+LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel+' was referenced in one process but defined in a different process');
+					// If defined, let's check it's same entry
+					IF LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Entry<>Entryno+1 THEN SyntaxError('Local label '+LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel+' was referenced in one entry but defined in a different one');
+					// Ok, now it's all OK, lets go
+					IF verbose THEN WriteLn('Forward reference of label "' + LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel + '" found at process #' + IntToStr(LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Process) + ', entry #' + IntToStr(LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Entry) + '.');
+					TempCondactList^.Opcode := TempCondactList^.Opcode AND 511; // remove the pending local label bit
+					TempCondactList^.Params[TempCondactList^.NumParams -1].Value := LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Condact;
+					break;
+				END;
+
+				TempCondactList := TempCondactList^.Next;
+			END;
+			Inc(Entryno);
+			TempEntriesList := TempEntriesList^.Next;
+		END;
+
+	END;
+END;
 
 PROCEDURE Scan(); forward;
 
@@ -114,6 +183,7 @@ FUNCTION getMaluvaFilename(): String;
 BEGIN
   IF (target='ZX') AND (Subtarget='PLUS3') THEN Result:='MLV_P3.BIN' ELSE
   IF (target='ZX') AND (Subtarget='NEXT') THEN Result:='MLV_NEXT.BIN' ELSE
+  IF (target='ZX') AND (Subtarget='UNO') THEN Result:='MLV_UNO.BIN' ELSE
   IF (target='ZX') AND (Subtarget='ESXDOS') THEN Result:='MLV_ESX.BIN' ELSE
   IF target='MSX' THEN Result:='MLV_MSX.BIN' ELSE
   IF target='C64' THEN Result:='MLV_C64.BIN' ELSE
@@ -148,8 +218,33 @@ PROCEDURE ParseEcho();
 BEGIN
  Scan();
  IF (CurrentTokenID<>T_STRING) THEN SyntaxError('Invalid string for #echo');
- WriteLn(CurrentText);
+ WriteLn(Copy(CurrentText, 2, Length(CurrentText) - 2));
 END;
+
+PROCEDURE SkipBlock(VAR CurrTokenPTR: TPTokenList);
+VAR	NestedIfdefCount : Word;
+	PreviousTokenPtr : TPTokenList;
+BEGIN
+	NestedIfdefCount := 1;
+	WHILE (CurrTokenPTR<>nil) AND (NestedIfdefCount>0) DO 
+	BEGIN
+		PreviousTokenPtr := CurrTokenPTR;
+		CurrTokenPTR := CurrTokenPTR^.Next;
+		IF CurrTokenPTR<>nil THEN
+		BEGIN
+			CurrentTokenID := CurrTokenPTR^.TokenID;
+			IF (CurrentTokenID=T_IFDEF) OR (CurrentTokenID=T_IFNDEF) THEN NestedIfdefCount := NestedIfdefCount + 1
+			ELSE IF (CurrentTokenID=T_ENDIF) THEN NestedIfdefCount := NestedIfdefCount - 1
+			ELSE IF (CurrentTokenID=T_ELSE) AND (NestedIfdefCount=1) THEN NestedIfdefCount := 0; // ELSE can only get you out of skip block if is the ELSE of the IFDEF that started it, otherwise else is ignored
+		END;	
+	END;
+	IF (CurrTokenPTR=nil) THEN SyntaxError('Unexpected end of file. #ifdef/#ifndef couldn''t find #endif');
+	// If we exit because of a #else we will just return pointing to the next token after else because after an else is basically the same than after an #ifdef/#ifndef
+	//IF CurrentTokenID = T_ELSE THEN GlobalNestedIfdefCount := GlobalNestedIfdefCount + 1 
+	//ELSE
+	 IF CurrentTokenID = T_ENDIF  THEN CurrTokenPTR := PreviousTokenPtr;  // But it it's a #endif we rewind one step so it points to the #ifdef and the un-identation of nested #ifdef works naturally 
+END;
+
 
 PROCEDURE Scan();
 VAR Evaluation: Boolean;
@@ -172,65 +267,38 @@ BEGIN
 	  //FI		 CurrentText := CurrTokenPTR^.Text; WriteLn('Fast # ' , CurrentTokenID, ' ', CurrentText);
 		CASE CurrentTokenID of  // Firs parse the directive
 		T_DEFINE: ParseDefine();
-		T_IFDEF, T_IFNDEF: BEGIN
-													IF OnIfdefMode or OnElse THEN SyntaxError('Nested #ifdef/#ifndef');
-						 					 		if CurrTokenPTR^.Next = nil THEN SyntaxError('Unexpected end of file just after #ifdef/#ifndef');
-	 												CurrTokenPTR := CurrTokenPTR^.Next;
-													if CurrTokenPTR^.TokenID <> T_STRING THEN SyntaxError('Invalid #ifdef/#ifndef label, please include the label in betwween quotes');
-	 												MyDefine := CurrTokenPTR^.Text;
-	 												MyDefine := Copy(MyDefine, 2, Length(MyDefine) - 2);
-	 												Evaluation:= GetSymbolValue(SymbolList, MyDefine)<>MAXLONGINT;
-	 												IF CurrentTokenID = T_IFNDEF THEN Evaluation:= not Evaluation;
-													IF NOT Evaluation THEN // ifdef/ifndef failed
-													BEGIN
-														WHILE (CurrTokenPTR<>nil) AND (CurrTokenPTR^.TokenID<>T_ENDIF)  AND (CurrTokenPTR^.TokenID<>T_ELSE) DO 
-		 												BEGIN
-		 													CurrTokenPTR := CurrTokenPTR^.Next;
-															IF CurrTokenPTR<>nil THEN
-															BEGIN
-																CurrentTokenID := CurrTokenPTR^.TokenID;
-																IF (CurrentTokenID=T_IFDEF) OR (CurrentTokenID=T_IFNDEF) THEN SyntaxError('Nested #ifdef/#ifndef not allowed');
-															END;	
-														END;
-														IF (CurrTokenPTR=nil) THEN SyntaxError('Unexpected end of file. #ifdef/#ifndef couldn''t find #endif while in failed condition "'+MyDefine+'"');
-														IF (CurrentTokenID = T_ELSE) THEN
-														BEGIN
-															OnIfdefMode := true;
-															OnElse := true;
-														END;
-													END
-													ELSE 
-													BEGIN // IF EVALUATION OK
-														OnIfdefMode := true;
-													END;	 
-											 END;	
-		T_ENDIF: BEGIN
-							 IF NOT OnIfdefMode THEN SyntaxError('#endif without #ifdef/#ifndef');
-							 OnIfdefMode := false;
-               OnElse := false;
-						 END;
-		T_ELSE:  BEGIN // If we get to an ELSE directly, it means the #ifdef/#ifndef evaluation was succesful, so we must be in ifdefmode
-						  IF OnElse THEN SyntaxError('Nested #else');
-		          IF NOT OnIfdefMode THEN SyntaxError('#else without #ifdef/#ifndef');
-							OnElse := true;
-							// That also means the part after the #else should be skipped
-							WHILE (CurrTokenPTR<>nil) AND (CurrTokenPTR^.TokenID<>T_ENDIF) DO 
-							BEGIN
-								CurrTokenPTR := CurrTokenPTR^.Next;
-								IF CurrTokenPTR<>nil THEN
-							  BEGIN
-									CurrentTokenID := CurrTokenPTR^.TokenID;
-									IF (CurrentTokenID=T_IFDEF) OR (CurrentTokenID=T_IFNDEF) OR (CurrentTokenID=T_ELSE) THEN SyntaxError('Nested #ifdef/#ifndef/#else not allowed');
-								END;	
-							END;
-							IF (CurrTokenPTR=nil) THEN SyntaxError('Unexpected end of file. #ifdef/#ifndef couldn''t find #endif while in failed condition "'+MyDefine+'"');
-						 END;
 		T_ECHO: ParseEcho();
-    T_EXTERN: ParseExtern('EXTERN');
+    	T_EXTERN: ParseExtern('EXTERN');
 		T_INT: ParseExtern('INT');
 		T_SFX: ParseExtern('SFX');
 		T_CLASSIC: ClassicMode := true;
 		T_DEBUG: DebugMode := true;
+		T_ENDIF: BEGIN
+					 IF GlobalNestedIfdefCount = 0 THEN SyntaxError('#endif without #ifdef/#ifndef');
+					 GlobalNestedIfdefCount := GlobalNestedIfdefCount - 1;
+				 END;
+		T_ELSE:  BEGIN // You can only get to this T_ELSE if you are executing a #if(n)def that was succesful, so what we have to do here is skipping the "else" part
+				  IF GlobalNestedIfdefCount = 0 THEN SyntaxError('#else without #ifdef/#ifndef');
+		           SkipBlock(CurrTokenPTR);
+				  END; 
+		T_IFDEF, T_IFNDEF: 
+		        BEGIN
+					if CurrTokenPTR^.Next = nil THEN SyntaxError('Unexpected end of file just after #ifdef/#ifndef'); // No symbol after #ifdef
+
+					// Get Symbol
+					CurrTokenPTR := CurrTokenPTR^.Next;
+					if CurrTokenPTR^.TokenID <> T_STRING THEN SyntaxError('Invalid #ifdef/#ifndef label, please include the label or expression in betwween quotes'); // Not a string
+					// Evaluate symbol
+					MyDefine := CurrTokenPTR^.Text;
+					MyDefine := Copy(MyDefine, 2, Length(MyDefine) - 2);
+					Evaluation:= GetSymbolValue(SymbolList, MyDefine) <> MAXLONGINT;
+					// Negate result if it's #ifndef
+					IF CurrentTokenID = T_IFNDEF THEN Evaluation:= not Evaluation;
+					
+					GlobalNestedIfdefCount := GlobalNestedIfdefCount +1;
+					if (not Evaluation) THEN SkipBlock(CurrTokenPTR);  // If symbol does not exist we skip the block, which means skipping until next #endif or #else
+					 
+				END; // T_IFDEF, T_IFNDEF:
 		END; // CASE
     Scan(); // Then scan again
  END;
@@ -490,7 +558,7 @@ BEGIN
   IF AuxVocabularyPTR = nil THEN Result := MAXLONGINT ELSE  Result := AuxVocabularyPTR^.Value;
 END;
 
-PROCEDURE ParseProcessCondacts(var SomeEntryCondacts :  TPProcessCondactList);
+FUNCTION ParseProcessCondacts(var SomeEntryCondacts :  TPProcessCondactList; CurrentProcess:Longint; CurrentEntry : Longint):boolean;
 VAR Opcode : Longint;
 	CurrentCondactParams : TCondactParams;
 	Value : Longint;
@@ -503,21 +571,29 @@ VAR Opcode : Longint;
 	MaXMESs : Longint;
 	SemanticError : AnsiString;
 	SemanticExempt : Boolean;
-BEGIN
-	REPEAT
-		IF (SomeEntryCondacts<>nil) THEN Scan(); // Get Condact, skip first time when the condact list is empy cause it's already read
-		IF (CurrentTokenID <> T_IDENTIFIER)  AND (CurrentTokenID<>T_UNDERSCORE)  AND (CurrentTokenID<>T_SECTION_PRO) AND (CurrentTokenID<>T_SECTION_END)   AND (CurrentTokenID<>T_INCBIN) 
-		 AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_NUMBER) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR)	 
-		 AND (CurrentTokenID<>T_PROCESS_ENTRY_SIGN)	 THEN SyntaxError('Condact, new process entry or new process expected but "'+CurrentText+'" found');
+	LabelData: TLabelData;
+	LabelID : Word;
+	CurrentCondact  :Integer;
+	HasJumps : boolean;
 
-		IF (CurrentTokenID<>T_INCBIN) AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR) THEN
+BEGIN
+    CurrentCondact := 0;
+	HasJumps := false;
+	REPEAT
+		IF (SomeEntryCondacts<>nil) THEN Scan(); // Get Condact, skip first time when the condact list is empty cause it's already read
+		IF (CurrentTokenID <> T_IDENTIFIER)  AND (CurrentTokenID<>T_UNDERSCORE)  AND (CurrentTokenID<>T_SECTION_PRO) AND (CurrentTokenID<>T_SECTION_END) AND (CurrentTokenID<>T_INCBIN) 
+		 AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_NUMBER) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR) AND (CurrentTokenID<>T_LABEL)	 
+		 AND (CurrentTokenID<>T_LOCAL_LABEL) AND (CurrentTokenID<>T_PROCESS_ENTRY_SIGN) THEN
+		   SyntaxError('Condact, label, new process entry or new process expected but "'+CurrentText + '" found');
+
+		IF (CurrentTokenID<>T_INCBIN) AND (CurrentTokenID<>T_LOCAL_LABEL) AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR) AND (CurrentTokenID<>T_LABEL) THEN
 		BEGIN
 		  IF (CurrentTokenID = T_PROCESS_ENTRY_SIGN) OR (CurrentTokenID = T_SECTION_END) OR (CurrentTokenID = T_SECTION_PRO) THEN Opcode := -2 ELSE Opcode := GetCondact(CurrentText);
 		    
 			IF Opcode >= 0 THEN
 			BEGIN
 				// Check what to do with fake condacts
-				IF Opcode>=NUM_CONDACTS THEN  
+				IF (Opcode>=NUM_CONDACTS) AND (Opcode <256) THEN  
 				BEGIN
 					IF Opcode = XPICTURE_OPCODE THEN
 					BEGIN
@@ -560,7 +636,15 @@ BEGIN
 					BEGIN
 						SemanticExempt := true;
 						CurrentText := Copy(CurrentText, 2, Length(CurrentText)-2);
-						IF (Opcode IN [XMES_OPCODE, XMESSAGE_OPCODE]) AND (GetSymbolValue(SymbolList, 'BIT16')=MAXLONGINT)  AND (NOT ForceNormalMessages) THEN  
+						
+						// Implements the ForceXMessages parameter
+						IF (Opcode IN [MES_OPCODE, MESSAGE_OPCODE]) AND (ForceXMessages) THEN
+						BEGIN
+							if Opcode = MES_OPCODE THEN Opcode := XMES_OPCODE
+												   ELSE Opcode := XMESSAGE_OPCODE;
+						END;
+
+						IF (Opcode IN [XMES_OPCODE, XMESSAGE_OPCODE]) AND ( (GetSymbolValue(SymbolList, 'BIT16')=MAXLONGINT) OR (SubTarget='VGA256'))  AND (NOT ForceNormalMessages) THEN  
 						BEGIN
 							IF (length(CurrentText)>511) THEN SyntaxError('Extended messages can be only up to 511 characters long. Your message is ' + IntToStr(length(CurrentText))+ ' long.');
 							// Convert XMESSAGE into XMES with a string with #n at the end
@@ -596,11 +680,66 @@ BEGIN
 						Value := CurrentIntVal;
 						CurrentText := IntToStr(Value);
 					END;
+
+					IF (CurrentTokenID = T_LOCAL_LABEL) AND  ((Opcode AND 256) =256) THEN // Jump Maluva condacts
+					BEGIN
+  	   				  HasJumps := true;
+					  IF (GetLabelData(CurrentText, LabelData) <> -1) THEN // Local Label exists
+					  BEGIN
+					  	IF (CurrentProcess <> LabelData.Process) THEN SyntaxError('Label "'+CurrentText+'" is not in this entry');
+						IF (LabelData.Entry <> CurrentEntry+1) THEN SyntaxError('Label "'+CurrentText+'" is not in this entry ' + IntToStr(LabelData.Entry) +'  '+ IntToStr(CurrentEntry));
+						CurrentIntVal := LabelData.Condact;
+						CurrentText := IntToStr(CurrentIntVal);
+						CurrentTokenID := T_NUMBER;
+					  END
+					  ELSE
+					  BEGIN // It's a jump to a forward label
+					 	LabelID := AddLabel(CurrentText, CurrentProcess, CurrentEntry, true, -1); 
+      					IF Verbose THEN WriteLn('Forward declaration of local label '+CurrentText+' created.');
+						Opcode := Opcode OR 512; // Set the Opcode bit for pending forward label
+						CurrentCondactParams[i].Value := LabelID; 
+						CurrentTokenID := T_NUMBER;
+						CurrentText:=IntToStr(CurrentCondactParams[i].Value);
+						CurrentIntVal := CurrentCondactParams[i].Value;
+					  END; 
+					END;
+
+					IF (CurrentTokenID = T_LABEL) ANd  (Opcode = SKIP_OPCODE) THEN
+					BEGIN
+					 IF (GetLabelData(CurrentText, LabelData) <> -1) THEN // Label exists, replace numeric value
+					 BEGIN
+						IF (CurrentProcess <> LabelData.Process) THEN SyntaxError('Label "'+CurrentText+'" is not in this process');
+						// At this point we know the label, if exists, is beacuse it was defined before, so jump is always backwars. We only check if jump < -128
+						IF (LabelData.Entry - CurrentEntry -  1 < -128) THEN SyntaxError('Label "'+CurrentText+'" is too far from SKIP call, maximum 128 entries far allowed');
+						// At this point it's a valid label, we just replace the token so it works as if the real numeric value was there
+						CurrentIntVal := LabelData.Entry - CurrentEntry -1;
+						CurrentText := IntToStr(LabelData.Entry - CurrentEntry -1);
+						CurrentTokenID := T_NUMBER;
+					 END
+					 ELSE
+					 BEGIN  // The label was not yet available, it's a forward reference
+					    // Add empty label
+					 	LabelID := AddLabel(CurrentText, -1, -1, true, -1); 
+      					IF Verbose THEN WriteLn('Forward declaration of label '+CurrentText+' created.');
+						// Replace current condact with a PENDING_SKIP
+						Opcode := PENDINGSKIP_OPCODE;
+						CurrentCondactParams[0].Indirection := false;
+						CurrentCondactParams[0].Value := LabelID;
+						CurrentTokenID := T_NUMBER;
+						CurrentText:=IntToStr(LabelID);
+						CurrentIntVal := LabelID;
+					 END;
+					END;
+
+					IF (CurrentTokenID  = T_LABEL) AND ((Opcode AND 256) = 256) THEN
+					BEGIN
+					END;
+
 					IF (CurrentTokenID <> T_NUMBER) AND (CurrentTokenID <> T_IDENTIFIER) AND (CurrentTokenID<> T_UNDERSCORE) AND (CurrentTokenID<>T_STRING) THEN SyntaxError('Invalid condact parameter');
 
-					// Lets'de termine the value of the parameter
+					// Lets' dtermine the value of the parameter
 					Value := MAXLONGINT;
-					// IF a string then eveluate expression
+					// IF a string then evaluate expression
 					if CurrentTokenID = T_STRING THEN  Value  := GetExpressionValue();
 					// If  an underscore, value is clear
 					IF CurrentTokenID = T_UNDERSCORE THEN Value:= NO_WORD;
@@ -611,13 +750,13 @@ BEGIN
 					// if still the value is not found, check the Vocavulary again, but more openly
 					IF Value = MAXLONGINT THEN Value:= GetWordParamValue(CurrentText, 255);
 					// If still MAXLONGINT, then it should be a bad parameter
-					IF Value = MAXLONGINT THEN SyntaxError('Invalid parameter #' + IntToStr(i+1) + ': "'+CurrentText+'"');
+					IF Value = MAXLONGINT THEN SyntaxError('Invalid parameter #' + IntToStr(i+1) + ': "'+CurrentText+'" for condact '+ Condacts[Opcode].Condact);
 					IF (Opcode=SKIP_OPCODE) AND (Value<0) THEN Value := 256 + Value;
 					IF (Opcode in [XMES_OPCODE, XMESSAGE_OPCODE]) THEN 
 					BEGIN
-						IF (Value<0) THEN SyntaxError('Invalid parameter value "'+CurrentText+'"');
+						IF (Value<0) THEN SyntaxError('Invalid parameter value "'+CurrentText+'" for condact '+ Condacts[Opcode].Condact);
 					END 
-					ELSE IF (Value<0)  OR (Value>MAX_PARAMETER_RANGE) THEN SyntaxError('Invalid parameter value "'+CurrentText+'"');
+					ELSE IF (Value<0)  OR (Value>MAX_PARAMETER_RANGE) THEN SyntaxError('Invalid parameter value "'+CurrentText+'" for condact '+ Condacts[Opcode].Condact);
 					
 					CurrentCondactParams[i].Value := Value;
 					// Semantic Check
@@ -638,6 +777,21 @@ BEGIN
 			BEGIN
 			 IF (Opcode=-1) THEN SyntaxError('Unknown condact: "'+CurrentText+'"'); // If opcode = -1, it was an invalid condact, otherwise we have found entry end because of another entry, another process or \END
 			END 
+		END ELSE
+		IF CurrentTokenID=T_LOCAL_LABEL THEN // LOCAL_LABEL
+		BEGIN
+			IF (AddLabel(CurrentText, CurrentProcess, CurrentEntry+1, false, CurrentCondact)=-1) THEN SyntaxError('Label already defined ('+CurrentText+') or too many labels');
+			IF Verbose THEN WriteLn('Local label '+CurrentText+' created at process #'+IntToStr(CurrentProcess)+', entry #', IntToStr(CurrentEntry+1), ', condact #',IntToStr(CurrentCondact),'.');
+			IF (SomeEntryCondacts=nil) THEN Scan();
+			CurrentCondact := CurrentCondact -1;
+			Opcode := 0;
+		END ELSE
+		IF CurrentTokenID=T_LABEL THEN // LABEL
+		BEGIN
+		 IF (AddLabel(CurrentText, CurrentProcess, CurrentEntry+1, false, -1)=-1) THEN SyntaxError('Label already defined ('+CurrentText+') or too many labels');
+		 IF Verbose THEN WriteLn('Label '+CurrentText+' created at process #'+IntToStr(CurrentProcess)+', entry #', IntToStr(CurrentEntry+1),'.');
+		 Opcode := -1;
+		 CurrentCondact := CurrentCondact - 1; // Because we don't want the condact counter to increase because of a label
 		END ELSE
 		IF CurrentTokenID=T_USERPTR THEN  // USERPTR
 		BEGIN
@@ -703,7 +857,9 @@ BEGIN
 			END;
 			CloseFile(IncludedFile);
 		END;
-	UNTIL Opcode < 0;
+		CurrentCondact := CurrentCondact + 1;
+	UNTIL Opcode < 0;	
+	Result := HasJumps;
 END;	
 
 PROCEDURE ParseVerbNoun(var Verb: Longint; var  Noun: Longint);
@@ -764,30 +920,48 @@ Its the same as:
    MESSSAGE "You don't have the key."
    DONE
 *)
+
+
+
+
 PROCEDURE ParseProcessEntries(CurrentProcess: Longint);
 VAR 	Verb, Noun : Longint;
 	EntryCondacts :  TPProcessCondactList;
 	VerbNouns : array of longint;
 	i : integer;
+	CurrentEntry : Word;
+	HasJumps : boolean;
 BEGIN
-	Scan(); // Get > sign or next process
+	CurrentEntry := 0;
+	Scan(); // Get > sign, label,  or next process
 	REPEAT
-	 IF (CurrentTokenID<>T_PROCESS_ENTRY_SIGN) AND  (CurrentTokenID<>T_SECTION_PRO) AND  (CurrentTokenID<>T_SECTION_END) THEN SyntaxError('Entry sign expected ">" but "'+CurrentText+'" found');
+	 IF (CurrentTokenID<>T_PROCESS_ENTRY_SIGN) AND  (CurrentTokenID<>T_SECTION_PRO) AND  (CurrentTokenID<>T_SECTION_END) AND (CurrentTokenID<>T_LABEL) THEN SyntaxError('Label or entry sign ">" expected  but "'+CurrentText+'" found');
 
      IF (CurrentTokenID <> T_SECTION_PRO) AND  (CurrentTokenID<>T_SECTION_END) THEN
      BEGIN
-	      setLength(VerbNouns, 0);
-	      REPEAT  // Repeat per each synonym entry (check comment above this procedure to see what synonym entries are)
-		  	ParseVerbNoun(Verb, Noun);
-			setLength(VerbNouns, Length(VerbNouns)+2);
-			VerbNouns[High(VerbNouns)-1] := Verb;
-			VerbNouns[High(VerbNouns)] := Noun;
-		  	Scan();
-		  UNTIL CurrentTokenID<>T_PROCESS_ENTRY_SIGN;
-		  EntryCondacts := nil;
-		  ParseProcessCondacts(EntryCondacts);
-		  // Dump condacts once per each synonym entry
-		  for i:=0 to ((Length(VerbNouns) DIV 2) -1) DO AddProcessEntry(Processes[CurrentProcess].Entries, VerbNouns[i*2], VerbNouns[i*2+1], EntryCondacts);
+	 	  IF (CurrentTokenID=T_LABEL) THEN // A label
+		  BEGIN
+		    // try to create a new label reference
+		  	IF (AddLabel(CurrentText, CurrentProcess, CurrentEntry, false,-1)=-1) THEN SyntaxError('Label already defined ('+CurrentText+') or too many labels');
+			IF Verbose THEN WriteLn('Label '+CurrentText+' created at process #'+IntToStr(CurrentProcess)+', entry #', IntToStr(CurrentEntry),'.');
+			Scan();
+		  END
+		  ELSE
+		  BEGIN // A entry
+			setLength(VerbNouns, 0);
+			REPEAT  // Repeat per each synonym entry (check comment above this procedure to see what synonym entries are)
+				ParseVerbNoun(Verb, Noun);
+				setLength(VerbNouns, Length(VerbNouns)+2);
+				VerbNouns[High(VerbNouns)-1] := Verb;
+				VerbNouns[High(VerbNouns)] := Noun;
+				Scan();
+			UNTIL CurrentTokenID<>T_PROCESS_ENTRY_SIGN;
+			EntryCondacts := nil;
+			HasJumps := ParseProcessCondacts(EntryCondacts, CurrentProcess, CurrentEntry);
+			// Dump condacts once per each synonym entry
+			for i:=0 to ((Length(VerbNouns) DIV 2) -1) DO AddProcessEntry(Processes[CurrentProcess].Entries, VerbNouns[i*2], VerbNouns[i*2+1], EntryCondacts, HasJumps);
+			CurrentEntry := CurrentEntry + (Length(VerbNouns) DIV 2);
+		END;
      END;
   UNTIL (CurrentTokenID = T_SECTION_PRO) OR (CurrentTokenID = T_SECTION_END);
 END;
@@ -808,7 +982,7 @@ BEGIN
 		IF ProcNum<>CurrentProcess THEN SyntaxError('Definition for process #' + IntToStr(CurrentProcess) + ' expected but process #' + IntToStr(ProcNum) + ' found');
 		ProcessCount := ProcessCount + 1;
 		ParseProcessEntries(CurrentProcess);
-    Inc(CurrentProcess);
+    	Inc(CurrentProcess);
 	UNTIL CurrentTokenID = T_SECTION_END;
 END; 		
 
@@ -818,7 +992,6 @@ BEGIN
 	ClassicMode := false;
 	MaluvaUsed := false;
 	DebugMode := false;
-	OnIfdefMode := false;
 	MTXCount := 0;
 	STXCount := 0;
 	LTXCount := 0;
@@ -826,6 +999,7 @@ BEGIN
 	OtherTXCount := 0;
 	Target := ATarget;
 	Subtarget := ASubtarget;
+	GlobalNestedIfdefCount := 0;
 	ParseCTL();
 	ParseVOC();
 	ParseSTX();
@@ -835,6 +1009,7 @@ BEGIN
 	ParseCON();
 	ParseOBJ();
 	ParsePRO();
+	if (GlobalNestedIfdefCount<>0) THEN SyntaxError( IntToStr(GlobalNestedIfdefCount)+' #endif(s) missing.');
 END;
 
 END.
