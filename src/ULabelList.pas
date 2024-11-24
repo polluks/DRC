@@ -33,7 +33,6 @@ FUNCTION AddLabel(ALabel: AnsiString; AProcess: Longint; AEntry : Longint; IsFor
 VAR i: Longint;
  BEGIN
     Result := -1;
-
     FOR i:= 0 to NextFreeLabelSlot - 1 DO 
         IF(LabelList[i].SkipLabel = ALabel) THEN
         BEGIN

@@ -16,7 +16,7 @@ BEGIN
   WriteLn();
 	WriteLn('file.DSF is a DAAD', ' ', version_hi, '.', version_lo, ' source file.');
   WriteLn();
-	WriteLn('<target> is the target machine, one of this list: ZX, CPC, C64, CP4, MSX, MSX2, PCW, PC, AMIGA or ST. The target machine will be added as if there were a ''#define <target> '' in the code, so you can make the code depend on target platform. Just to clarify, CP4 stands for Commodore Plus/4');
+	WriteLn('<target> is the target machine, one of this list: ZX, CPC, C64, CP4, MSX, MSX2, PCW, PC, AMIGA, ST or HTML. The target machine will be added as if there were a ''#define <target> '' in the code, so you can make the code depend on target platform. Just to clarify, CP4 stands for Commodore Plus/4');
   WriteLn();
 	WriteLn('[subtarget] is an parameter only required when the target is ZX, MSX2 or PC. Will define the internal variable COLS, which can later be used in DAAD processes.');
   Writeln('For MSX2 values are a compound value of video mode (from mode 5 to 12, except 9 and 11) and the with of the charset im pixels, which can be 6 or 8. Example: 5_8, 10_8, 12_6, 7_6, etc.');
@@ -32,6 +32,8 @@ BEGIN
   WriteLn('          -semantic-warnings: DRF will just show semantic errors as warnings, but won''t stop compilation');
   WriteLn('          -force-normal-messages: all xmessages will be treated as normal messages');
   WriteLn('          -force-x-messages: all user messages will be created as xmessages. Does not affect those written in the MTX table.');
+  WriteLn('          -check-maluva-disabled: the compiler won''t check if Maluva was included when finding Maluva condacts.');
+  WriteLn('          -v3: compile for DAAD version 3.');
   WriteLn();
 	WriteLn('[additional symbols] is an optional comma separated list of other symbols that would be created, so for instance if that parameter is "p3", then #ifdef "p3" will be true, and if that parameter is "p3,p4" then also #ifdef "p4" would be true.');
 	Halt(1);
@@ -105,6 +107,7 @@ BEGIN
  IF Target = 'C64' THEN Result := 40 ELSE
  IF Target = 'CP4' THEN Result := 40 ELSE
  IF Target = 'CPC' THEN Result := 40 ELSE
+ IF Target = 'HTML' THEN Result := 40 ELSE
  IF Target = 'MSX' THEN Result := 42 ELSE
  IF Target = 'MSX2' THEN Result := getMSX2ColsBySubtarget(SubTarget) ELSE
  IF Target = 'ST' THEN Result := 53 ELSE
@@ -226,7 +229,8 @@ BEGIN
   machine :=AnsiUpperCase(Target);
   // The target superset BIT8 or BIT16
   if (machine='ZX') OR (machine='CPC') OR (machine='PCW') OR (machine='MSX') OR (machine='C64') OR (machine='CP4') or (MACHINE='MSX2') THEN AddSymbol(SymbolList, 'BIT8', 1);
-  if (machine='PC') OR (machine='AMIGA') OR (machine='ST') THEN   AddSymbol(SymbolList, 'BIT16', 1);
+  if (machine='PC') OR (machine='AMIGA') OR (machine='ST') THEN AddSymbol(SymbolList, 'BIT16', 1);
+  // Please notice HTML target adds neither BIT8 nor BIT16 symbols.
   // add COLS Symbol
   cols := getColsByTarget(Target, SubTarget);
   if (cols<>0) THEN AddSymbol(SymbolList, 'COLS', cols);
@@ -246,6 +250,29 @@ BEGIN
   AddSymbol(SymbolList, 'YEARLOW', YearOf(Now) MOD 100);
   AddSymbol(SymbolList, 'MONTH', MonthOf(Now) MOD 100);
   AddSymbol(SymbolList, 'DAY', DayOf(Now) MOD 100);
+  // The SFX commands symbols
+  AddSymbol(SymbolList, 'PLAYSFX', 1);
+  AddSymbol(SymbolList, 'PLAYSFXL', 2);
+  AddSymbol(SymbolList, 'PLAYSFXF', 3);
+  AddSymbol(SymbolList, 'PLAYSFXFL', 4);
+  AddSymbol(SymbolList, 'STOPSFX', 5);
+  AddSymbol(SymbolList, 'PLAYDRO', 6);
+  AddSymbol(SymbolList, 'PLAYDROL', 7);
+  AddSymbol(SymbolList, 'STOPDRO', 8);
+  AddSymbol(SymbolList, 'PLAYFLI', 9);
+  AddSymbol(SymbolList, 'PLAYFLIL', 10);
+
+  // THe MOUSE command symbols
+  AddSymbol(SymbolList, 'RESETMS', 0);
+  AddSymbol(SymbolList, 'SHOWMS', 1);
+  AddSymbol(SymbolList, 'HIDEMS', 2);
+  AddSymbol(SymbolList, 'GETMS', 3);
+  AddSymbol(SymbolList, 'GETFINEMS', 4);
+  AddSymbol(SymbolList, 'POINTERMS', 5);
+  AddSymbol(SymbolList, 'DELTAXMS', 6);
+  AddSymbol(SymbolList, 'DELTAYMS', 7);
+
+
   // Add additionalSymbols if present
   i := 1;
   REPEAT
@@ -337,6 +364,19 @@ BEGIN
                                     BEGIN 
                                       ForceXMessages := true;
                                       if Verbose THEN WriteLn('Warning: Forced XMessages'); 
+                                    END 
+                                    ELSE
+                                    IF AuxString = '-check-maluva-disabled' THEN
+                                    BEGIN 
+                                      CheckMaluva := false;
+                                      if Verbose THEN WriteLn('Warning: Forced XMessages'); 
+                                    END
+                                    ELSE
+                                    IF AuxString = '-v3' THEN
+                                    BEGIN 
+                                      V3CODE := true;
+                                      MAX_PARAM_ACCEPTING_INDIRECTION := 2;
+                                      if Verbose THEN WriteLn('Warning: Generating code for DAAD V3'); 
                                     END
                                     ELSE ParamError('Invalid option: ' + AuxString);
                                    END;

@@ -4,7 +4,7 @@ UNIT UConstants;
 INTERFACE
 
 CONST version_hi = 0;
-	  version_lo = 27;
+	  version_lo = 34;
 
       LOC_CARRIED = 254;
       LOC_WORN = 253;       
@@ -14,18 +14,25 @@ CONST version_hi = 0;
       MAX_FLAG_VALUE = 255;
       VOCABULARY_LENGTH = 5;
       MAX_DIRECTION_VOCABULARY = 13;
-      MAX_CONVERTIBLE_NAME = 19;
+      MAX_CONVERTIBLE_NAME = 39;
       MAX_PROCESSES = 255;
       MAX_CONDACT_PARAMS  =3;
-      MAX_PARAM_ACCEPTING_INDIRECTION = 1;
+      MAX_V3_DIRECTION = 127;
+      MAX_BLOCKABLE_CONNECTIONS = 128;
+      MAX_OBJECTS_V2 = 256;
+      MAX_OBJECTS_V3 = 120;
+            
       MAX_MESSAGES_PER_TABLE = 255;
+      MAX_WEIGHT = 63;
 
       MAX_PARAMETER_RANGE = 255;
 
       MAX_LABELS = 1024;
 
       NUM_CONDACTS  =128;
-      NUM_FAKE_CONDACTS = 14;
+      NUM_FAKE_CONDACTS = 15;
+      NUM_PREFIX_CONDACTS = 10;
+
 
       MESSAGE_OPCODE = 38;
       MES_OPCODE =77;
@@ -45,6 +52,7 @@ CONST version_hi = 0;
       XNEXTCLS_OPCODE=138;
       XNEXTRST_OPCODE=139;
       XSPEED_OPCODE=140;
+      XDATA_OPCODE=142;
       BEEP_OPCODE = 64;
 
       DESC_OPCODE = 19;
@@ -57,11 +65,13 @@ CONST version_hi = 0;
       ADJECT1_OPCODE = 16;
       ADVERB_OPCODE = 17;
       ADJECT2_OPCODE = 70;
-
+      MES2_OPCODE =  512 + 9;
       FAKE_DEBUG_CONDACT_CODE = 220; // the fake DEBUG Condact
       FAKE_DEBUG_CONDACT_TEXT = 'DEBUG';
 
       FAKE_USERPTR_CONDACT_CODE = 256;    
+
+      TOGGLECON_OPCODE = 520;
 
 // Compile options
 VAR ForceNormalMessages : Boolean;
@@ -69,6 +79,9 @@ VAR ForceNormalMessages : Boolean;
     NoSemantic : Boolean;
     SemanticWarnings : Boolean;
     Verbose: Boolean;
+    CheckMaluva: Boolean;
+    V3CODE : Boolean;
+    MAX_PARAM_ACCEPTING_INDIRECTION: Byte;
 
 IMPLEMENTATION
 
@@ -77,4 +90,7 @@ BEGIN
        NoSemantic := false;
        SemanticWarnings := false;
        Verbose := false;
+       CheckMaluva := true;
+       V3CODE := false; 
+       MAX_PARAM_ACCEPTING_INDIRECTION := 1;
 END.

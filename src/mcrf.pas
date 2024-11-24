@@ -10,6 +10,7 @@ PROGRAM MCRF;
 USES sysutils, strutils;
 
 
+CONST DUMMY_HEADER : array[0..127] of byte = ($00 , $47 , $49 , $4C , $42 , $45 , $52 , $54 , $53 , $42 , $49 , $4E , $00 , $00 , $00 , $00 , $00 , $00 , $02 , $00 , $00 , $40 , $08 , $00 , $45 , $1D , $79 , $24 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $45 , $1D , $00 , $E0 , $04 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00 , $00);
 CONST VERSION=03;     (* Increased from original 01 for non CP/M version *)
 CONST FILEV=00;
 CONST PATHLEN=64;
@@ -27,6 +28,7 @@ VAR OutputFile, InputFile : FILE;
     FileLength :  Word;
     GraphicsLength : Word;
     RealDDBLength: Word;
+    RealInterpreterLength: Word;
     CharsetOffset : Word;
 
 
@@ -100,7 +102,7 @@ BEGIN
   Writeln('Example: MCRF MYGAME.BIN INT.Z80 MYGAME.DDB MYGAME.GRA');
   Writeln('Example: MCRF MYGAME.BIN INT.Z80 MYGAME.DDB MYGAME.GRA PAW1.CHR');
   Writeln();
-  Writeln('Important: The interpreter and graphics files should have an AMSDOS header. The DDB (text database) one may have it or not, MCRF will auto-detect it.');
+  Writeln('Important: The graphics file should have an AMSDOS header. The DDB (text database) and the interpreter files may have it or not, MCRF will auto-detect it.');
   WriteLn('CHR files are raw definition of 8x8 characters, 256 total, so it should be a 256 x 8 bytes file (2048). If an Amsdos header is present, it will be ignored.');
   Halt(1);
 END;
@@ -131,21 +133,36 @@ BEGIN
 
   Write('Interpreter length is ');
   Blockread(InputFile, cpcHeader, 128); (* Get CPC header *)
-  BlockWrite(OutputFile, cpcHeader, 128); (* Make dummy CPC header *)
-  WriteLn(ReadHeaderWord(24), ' bytes.');
+  IF (FileSize(InputFile) = (ReadHeaderWord(24) + 128)  )  THEN
+  BEGIN
+    RealInterpreterLength := ReadHeaderWord(24); // has AMSDOS header
+    BlockWrite(OutputFile, cpcHeader, 128); (* Make dummy CPC header *)
+  END
+  ELSE
+  BEGIN
+    RealInterpreterLength := FileSize(InputFile); // doesn't have AMSDOS header
+    FOR c:=0 TO 127 DO        (* Make dummy CPC header *)
+    BEGIN
+      Buffer1Byte := DUMMY_HEADER[c];
+      BlockWrite(OutputFile, Buffer1Byte, 1);
+    END;
+    Seek(InputFile, 0);  // Rewind
+  END;
+    
+  WriteLn(RealInterpreterLength, ' bytes.');
 
-  FOR c:=1 TO ReadHeaderWord(24) DO
+  FOR c:=1 TO RealInterpreterLength DO
   BEGIN
     Blockread(InputFile, Buffer1Byte, 1); 
     BlockWrite(OutputFile, Buffer1Byte, 1);
   END;
   CloseFile(InputFile);
 
-  IF ((DBADD-INTAT)> ReadHeaderWord(24)) THEN
+  IF ((DBADD-INTAT)> RealInterpreterLength) THEN
   BEGIN
-    WriteLn('Padding to db position using ',DBADD - INTAT - ReadHeaderWord(24),' bytes.');
+    WriteLn('Padding to db position using ',DBADD - INTAT - RealInterpreterLength,' bytes.');
     Buffer1Byte := 0;
-    FOR c:= 1 TO DBADD - INTAT - ReadHeaderWord(24) DO
+    FOR c:= 1 TO DBADD - INTAT - RealInterpreterLength DO
       BlockWrite(OutputFile, Buffer1Byte, 1);
   END;
 
@@ -162,9 +179,7 @@ BEGIN
   IF (FileSize(InputFile) = (ReadHeaderWord(24) + 128)  )  THEN  RealDDBLength := ReadHeaderWord(24) // has AMSDOS header
   ELSE
   BEGIN // Get from spare
-    Seek(InputFile, SPARE);
-    BlockRead(InputFile, RealDDBLength, 2);
-    RealDDBLength := RealDDBLength - DBADD;
+    RealDDBLength := FileSize(InputFile);
     Seek(InputFile, 0);  // Rewind
   END;
   WriteLn(RealDDBLength, ' bytes.');

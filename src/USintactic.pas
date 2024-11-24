@@ -59,7 +59,7 @@ var procno, entryno : Word;
     TempCondactList : TPProcessCondactList;
     
 BEGIN
-	FOR procno := 0 TO ProcessCount - 1 DO
+	FOR procno := 0 TO LastProcess DO
 	BEGIN
 		TempEntriesList := Processes[procno].entries;
 		entryno := 0;
@@ -80,21 +80,6 @@ BEGIN
 					IF verbose THEN WriteLn('Forward reference of label "' + LabelList[TempCondactList^.Params[0].Value].SkipLabel + '" found at process #' + IntToStr(LabelList[TempCondactList^.Params[0].Value].Process) + ', entry #' + IntToStr(LabelList[TempCondactList^.Params[0].Value].Entry) + '.');
 					TempCondactList^.Opcode := SKIP_OPCODE;
 					TempCondactList^.Params[0].Value := LabelList[TempCondactList^.Params[0].Value].Entry - EntryNo - 1;
-					break;
-				END
-				ELSE
-				IF (TempCondactList^.Opcode AND 512 = 512) THEN // Pending forward local label
-				BEGIN
-					// Check if forward refence was finally defined
-					IF LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].isForward THEN SyntaxError('Local label ' + LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel + ' was referenced but then not defined');
-					// If defined, let's check it's same process
-					IF LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Process<>procno THEN SyntaxError('Local label '+LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel+' was referenced in one process but defined in a different process');
-					// If defined, let's check it's same entry
-					IF LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Entry<>Entryno+1 THEN SyntaxError('Local label '+LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel+' was referenced in one entry but defined in a different one');
-					// Ok, now it's all OK, lets go
-					IF verbose THEN WriteLn('Forward reference of label "' + LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].SkipLabel + '" found at process #' + IntToStr(LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Process) + ', entry #' + IntToStr(LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Entry) + '.');
-					TempCondactList^.Opcode := TempCondactList^.Opcode AND 511; // remove the pending local label bit
-					TempCondactList^.Params[TempCondactList^.NumParams -1].Value := LabelList[TempCondactList^.Params[TempCondactList^.NumParams -1].Value].Condact;
 					break;
 				END;
 
@@ -245,6 +230,13 @@ BEGIN
 	 IF CurrentTokenID = T_ENDIF  THEN CurrTokenPTR := PreviousTokenPtr;  // But it it's a #endif we rewind one step so it points to the #ifdef and the un-identation of nested #ifdef works naturally 
 END;
 
+PROCEDURE UnScan();
+BEGIN
+	if (CurrTokenPTR^.Previous = nil) OR  (CurrTokenPTR^.Previous^.Previous = nil)
+	   THEN SyntaxError('UnScan() called when there is no previous token');
+	CurrTokenPTR := CurrTokenPTR^.Previous^.Previous;
+	Scan();
+END;
 
 PROCEDURE Scan();
 VAR Evaluation: Boolean;
@@ -383,6 +375,8 @@ BEGIN
 	ParseMessageList(OTX, OTXCount, T_SECTION_LTX);
 	AddSymbol(SymbolList, 'LAST_OBJECT', OTXCount -1);
 	AddSymbol(SymbolList, 'NUM_OBJECTS', OTXCount);
+	if ((NOT V3CODE) AND (OTXCount > MAX_OBJECTS_V2)) THEN SyntaxError('Too many objects, maximum allowed is ' + IntToStr(MAX_OBJECTS_V2));
+	if ((V3CODE) AND (OTXCount > MAX_OBJECTS_V3)) THEN SyntaxError('Too many objects, maximum allowed is for DAAD v3 is ' + IntToStr(MAX_OBJECTS_V3));
 END;
 
 PROCEDURE ParseLTX();
@@ -407,6 +401,7 @@ PROCEDURE ParseLocationConnections(Fromloc : Longint);
 VAR AuxVocabularyTree: TPVocabularyTree;
 	TheWord : AnsiString;
 	Direction, ToLoc : Longint;
+	Blockable, Blocked : Boolean;
 BEGIN
 	REPEAT
 		Scan();
@@ -422,8 +417,29 @@ BEGIN
 			if (CurrentTokenID <> T_IDENTIFIER) AND (CurrentTokenID<>T_NUMBER) THEN SyntaxError('Location number expected');
 			ToLoc := GetIdentifierValue();
 			IF (ToLoc = MAXLONGINT) THEN SyntaxError('"' +CurrentText + '" is not defined');
-			IF FindConnection(Connections, FromLoc, ToLoc, Direction) THEN SyntaxError('Connection already defined');
-			AddConnection(Connections, FromLoc, ToLoc, Direction);
+			Blockable := false;
+			Blocked := false;
+			if (V3CODE) THEN
+			BEGIN
+				IF Direction>MAX_V3_DIRECTION THEN SyntaxError('Invalid direction. DAAD V3 only supports the first '+IntToStr(MAX_V3_DIRECTION+1)+' verbs as directions.');
+				Scan();
+				if (CurrentTokenID = T_IDENTIFIER) THEN 
+				BEGIN
+				    if (AnsiUpperCase(CurrentText) = 'BLOCKED') THEN BEGIN 
+																	  Blockable := true;
+																	  Blocked := true;
+																	 END 
+					ELSE IF (AnsiUpperCase(CurrentText) = 'UNBLOCKED') THEN BEGIN 
+																			  Blockable := true;
+																			  Blocked := false;
+																			 END 
+					ELSE UnScan(); // If not BLOCKED or UNBLOCKED, it's a new direction or section, rewind
+				END			
+				ELSE UnScan(); // If not identifier, it's a new direction or section, rewind
+			END;	
+			IF FindConnection(Connections, FromLoc, ToLoc, Direction, Blockable, Blocked) THEN SyntaxError('Connection already defined');
+			AddConnection(Connections, FromLoc, ToLoc, Direction, Blockable, Blocked);
+			if (BlockableCount >MAX_BLOCKABLE_CONNECTIONS) THEN SyntaxError('Too many blockable connections, maximum allowed is ' + IntToStr(MAX_BLOCKABLE_CONNECTIONS));
 		END;
 	UNTIL (CurrentTokenID=T_LIST_ENTRY) OR (CurrentTokenID = T_SECTION_OBJ);
 END;
@@ -485,7 +501,7 @@ BEGIN
 			IF (CurrentTokenID<>T_IDENTIFIER) AND (CurrentTokenID<>T_NUMBER) THEN SyntaxError('Object weight expected');
 			Weight := GetIdentifierValue();
 			IF (Weight = MAXLONGINT) THEN SyntaxError('"' +CurrentText + '" is not defined');
-			IF (Weight >= MAX_FLAG_VALUE) THEN SyntaxError('Invalid weight :' + CurrentText);
+			IF (Weight > MAX_WEIGHT) THEN SyntaxError('Invalid weight :' + CurrentText);
 
 
 			Scan(); // Get if container
@@ -537,6 +553,8 @@ BEGIN
 		END;	
 	UNTIL CurrentTokenID = T_SECTION_PRO;
 	IF CurrentObj < OTXCount THEN SyntaxError('Definition for object #' + IntToStr(CurrentObj) + ' missing' );
+	AddSymbol(SymbolList, 'NUM_CARRIED', CarriedObjects);
+	AddSymbol(SymbolList, 'NUM_WORN', WornObjects);
 END;
 
 FUNCTION GetWordParamValue(Param: String; Opcode: Byte; ParameterNumber: Byte = 0): Integer;
@@ -558,7 +576,7 @@ BEGIN
   IF AuxVocabularyPTR = nil THEN Result := MAXLONGINT ELSE  Result := AuxVocabularyPTR^.Value;
 END;
 
-FUNCTION ParseProcessCondacts(var SomeEntryCondacts :  TPProcessCondactList; CurrentProcess:Longint; CurrentEntry : Longint):boolean;
+PROCEDURE ParseProcessCondacts(var SomeEntryCondacts :  TPProcessCondactList; CurrentProcess:Longint; CurrentEntry : Longint);
 VAR Opcode : Longint;
 	CurrentCondactParams : TCondactParams;
 	Value : Longint;
@@ -574,19 +592,18 @@ VAR Opcode : Longint;
 	LabelData: TLabelData;
 	LabelID : Word;
 	CurrentCondact  :Integer;
-	HasJumps : boolean;
+	
 
 BEGIN
     CurrentCondact := 0;
-	HasJumps := false;
 	REPEAT
 		IF (SomeEntryCondacts<>nil) THEN Scan(); // Get Condact, skip first time when the condact list is empty cause it's already read
 		IF (CurrentTokenID <> T_IDENTIFIER)  AND (CurrentTokenID<>T_UNDERSCORE)  AND (CurrentTokenID<>T_SECTION_PRO) AND (CurrentTokenID<>T_SECTION_END) AND (CurrentTokenID<>T_INCBIN) 
 		 AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_NUMBER) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR) AND (CurrentTokenID<>T_LABEL)	 
-		 AND (CurrentTokenID<>T_LOCAL_LABEL) AND (CurrentTokenID<>T_PROCESS_ENTRY_SIGN) THEN
+		 AND (CurrentTokenID<>T_PROCESS_ENTRY_SIGN) THEN
 		   SyntaxError('Condact, label, new process entry or new process expected but "'+CurrentText + '" found');
 
-		IF (CurrentTokenID<>T_INCBIN) AND (CurrentTokenID<>T_LOCAL_LABEL) AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR) AND (CurrentTokenID<>T_LABEL) THEN
+		IF (CurrentTokenID<>T_INCBIN) AND (CurrentTokenID<>T_DB) AND (CurrentTokenID<>T_DW) AND (CurrentTokenID<>T_HEX) AND (CurrentTokenID<>T_USERPTR) AND (CurrentTokenID<>T_LABEL) THEN
 		BEGIN
 		  IF (CurrentTokenID = T_PROCESS_ENTRY_SIGN) OR (CurrentTokenID = T_SECTION_END) OR (CurrentTokenID = T_SECTION_PRO) THEN Opcode := -2 ELSE Opcode := GetCondact(CurrentText);
 		    
@@ -598,19 +615,24 @@ BEGIN
 					IF Opcode = XPICTURE_OPCODE THEN
 					BEGIN
 						IF GetSymbolValue(SymbolList, 'BIT16')<>MAXLONGINT THEN Opcode := PICTURE_OPCODE  // If 16 bit machine, no XPICTURE
+						ELSE IF GetSymbolValue(SymbolList, 'HTML')<>MAXLONGINT THEN Opcode := PICTURE_OPCODE  // If HTML, no XPICTURE
 						ELSE IF (target='PCW')  THEN Opcode := PICTURE_OPCODE // If target PCW, no XPICTURE
 						ELSE MaluvaUsed := true;
 					END ELSE
 					IF Opcode = XSAVE_OPCODE THEN
 					BEGIN
 						IF GetSymbolValue(SymbolList, 'BIT16')<>MAXLONGINT THEN Opcode := SAVE_OPCODE  // If 16 bit machine, no XSAVE
+						ELSE IF GetSymbolValue(SymbolList, 'HTML')<>MAXLONGINT THEN Opcode := SAVE_OPCODE  // If HTML, no XPICTURE
 						ELSE IF (Target='PCW') OR (Target='CPC') OR (Target='C64') OR (Target='CP4')  THEN Opcode := SAVE_OPCODE // If target PCW/C64/CP4/CPC, no XSAVE
+						ELSE IF (SubTarget='NEXT') THEN Opcode := SAVE_OPCODE
 						ELSE MaluvaUsed := true;
 					END ELSE
 					IF Opcode = XLOAD_OPCODE THEN
 					BEGIN
 						IF GetSymbolValue(SymbolList, 'BIT16')<>MAXLONGINT THEN Opcode := LOAD_OPCODE  // If 16 bit machine, no XLOAD
+						ELSE IF GetSymbolValue(SymbolList, 'HTML')<>MAXLONGINT THEN Opcode := LOAD_OPCODE  // If HTML, no XPICTURE
 						ELSE IF (Target='PCW') OR (Target='CPC') OR (Target='C64') OR (Target='CP4')  THEN Opcode := LOAD_OPCODE // If target PCW/C64/CP4/CPC, no XLOAD
+						ELSE IF (SubTarget='NEXT') THEN Opcode := LOAD_OPCODE
 						ELSE MaluvaUsed := true;
 					END ELSE
 					IF Opcode = XBEEP_OPCODE THEN
@@ -632,13 +654,13 @@ BEGIN
 					  Scan();
 					END;
 			
-					IF (CurrentTokenID = T_STRING) AND (Opcode in [MESSAGE_OPCODE,MES_OPCODE, SYSMESS_OPCODE, XMES_OPCODE, XMESSAGE_OPCODE, XPLAY_OPCODE]) THEN  
+					IF (CurrentTokenID = T_STRING) AND ((Opcode in [MESSAGE_OPCODE,MES_OPCODE, SYSMESS_OPCODE, XMES_OPCODE, XMESSAGE_OPCODE, XPLAY_OPCODE])  OR (Opcode = TOGGLECON_OPCODE)) THEN  
 					BEGIN
 						SemanticExempt := true;
 						CurrentText := Copy(CurrentText, 2, Length(CurrentText)-2);
 						
 						// Implements the ForceXMessages parameter
-						IF (Opcode IN [MES_OPCODE, MESSAGE_OPCODE]) AND (ForceXMessages) THEN
+						IF ((Opcode IN [MES_OPCODE, MESSAGE_OPCODE]) OR (Opcode = MES2_OPCODE)) AND (ForceXMessages) THEN
 						BEGIN
 							if Opcode = MES_OPCODE THEN Opcode := XMES_OPCODE
 												   ELSE Opcode := XMESSAGE_OPCODE;
@@ -658,13 +680,19 @@ BEGIN
 						 CASE Opcode OF  // In case we are in a 16 bit machine, XMESSAGES are converted to normal messages
 							  XMES_OPCODE : Opcode := MES_OPCODE;
 							  XMESSAGE_OPCODE :Opcode := MESSAGE_OPCODE;
-						  END;
-						  IF Opcode = XPLAY_OPCODE THEN 
-						  BEGIN
-						  	CurrentIntVal := insertMessageFromProcessIntoSpecificList(OtherTX, CurrentText);
+						 END;
+						 IF (Opcode in  [XPLAY_OPCODE, XDATA_OPCODE]) THEN 
+						  BEGIN					  
+						  	CurrentIntVal := insertMessageFromProcessIntoSpecificList(OtherTX, CurrentText); // Signal with +512 so DRB knows it's a "other string" index and not a proper value.
 							MaXMESs := MAXLONGINT;
 						  END
 						  ELSE
+						  IF  (Opcode = TOGGLECON_OPCODE) THEN 
+						  BEGIN
+						     CurrentIntVal := getConnectionOrdinalFromString(CurrentText);
+							 IF (CurrentIntVal = MAXLONGINT) THEN SyntaxError('Invalid blockable connection: "'+CurrentText+'"');
+						  END
+           	  			  ELSE
 						  BEGIN
 							CurrentIntVal := insertMessageFromProcess(Opcode, CurrentText, ClassicMode);
 							MaXMESs :=MAX_MESSAGES_PER_TABLE;
@@ -674,36 +702,14 @@ BEGIN
 	 				  IF CurrentIntVal>=MaXMESs THEN
 						BEGIN
 						 IF ClassicMode THEN SyntaxError('Too many messages, max messages per message table is ' +  IntToStr(MAX_MESSAGES_PER_TABLE))
-						                ELSE SyntaxError('Too many messages, total messages in  MTX, STX and LTX tables, plus "MESSAGE" strings is ' +  IntToStr(3*MAX_MESSAGES_PER_TABLE));
+						                ELSE SyntaxError('Too many messages, total messages in MTX, STX and LTX tables, plus "MESSAGE" strings is ' +  IntToStr(3*MAX_MESSAGES_PER_TABLE));
 						END;
 	 					CurrentTokenID := T_NUMBER;
 						Value := CurrentIntVal;
 						CurrentText := IntToStr(Value);
 					END;
 
-					IF (CurrentTokenID = T_LOCAL_LABEL) AND  ((Opcode AND 256) =256) THEN // Jump Maluva condacts
-					BEGIN
-  	   				  HasJumps := true;
-					  IF (GetLabelData(CurrentText, LabelData) <> -1) THEN // Local Label exists
-					  BEGIN
-					  	IF (CurrentProcess <> LabelData.Process) THEN SyntaxError('Label "'+CurrentText+'" is not in this entry');
-						IF (LabelData.Entry <> CurrentEntry+1) THEN SyntaxError('Label "'+CurrentText+'" is not in this entry ' + IntToStr(LabelData.Entry) +'  '+ IntToStr(CurrentEntry));
-						CurrentIntVal := LabelData.Condact;
-						CurrentText := IntToStr(CurrentIntVal);
-						CurrentTokenID := T_NUMBER;
-					  END
-					  ELSE
-					  BEGIN // It's a jump to a forward label
-					 	LabelID := AddLabel(CurrentText, CurrentProcess, CurrentEntry, true, -1); 
-      					IF Verbose THEN WriteLn('Forward declaration of local label '+CurrentText+' created.');
-						Opcode := Opcode OR 512; // Set the Opcode bit for pending forward label
-						CurrentCondactParams[i].Value := LabelID; 
-						CurrentTokenID := T_NUMBER;
-						CurrentText:=IntToStr(CurrentCondactParams[i].Value);
-						CurrentIntVal := CurrentCondactParams[i].Value;
-					  END; 
-					END;
-
+	
 					IF (CurrentTokenID = T_LABEL) ANd  (Opcode = SKIP_OPCODE) THEN
 					BEGIN
 					 IF (GetLabelData(CurrentText, LabelData) <> -1) THEN // Label exists, replace numeric value
@@ -730,14 +736,10 @@ BEGIN
 						CurrentIntVal := LabelID;
 					 END;
 					END;
-
-					IF (CurrentTokenID  = T_LABEL) AND ((Opcode AND 256) = 256) THEN
-					BEGIN
-					END;
-
+					
 					IF (CurrentTokenID <> T_NUMBER) AND (CurrentTokenID <> T_IDENTIFIER) AND (CurrentTokenID<> T_UNDERSCORE) AND (CurrentTokenID<>T_STRING) THEN SyntaxError('Invalid condact parameter');
 
-					// Lets' dtermine the value of the parameter
+					// Let's determine the value of the parameter
 					Value := MAXLONGINT;
 					// IF a string then evaluate expression
 					if CurrentTokenID = T_STRING THEN  Value  := GetExpressionValue();
@@ -778,18 +780,11 @@ BEGIN
 			 IF (Opcode=-1) THEN SyntaxError('Unknown condact: "'+CurrentText+'"'); // If opcode = -1, it was an invalid condact, otherwise we have found entry end because of another entry, another process or \END
 			END 
 		END ELSE
-		IF CurrentTokenID=T_LOCAL_LABEL THEN // LOCAL_LABEL
-		BEGIN
-			IF (AddLabel(CurrentText, CurrentProcess, CurrentEntry+1, false, CurrentCondact)=-1) THEN SyntaxError('Label already defined ('+CurrentText+') or too many labels');
-			IF Verbose THEN WriteLn('Local label '+CurrentText+' created at process #'+IntToStr(CurrentProcess)+', entry #', IntToStr(CurrentEntry+1), ', condact #',IntToStr(CurrentCondact),'.');
-			IF (SomeEntryCondacts=nil) THEN Scan();
-			CurrentCondact := CurrentCondact -1;
-			Opcode := 0;
-		END ELSE
 		IF CurrentTokenID=T_LABEL THEN // LABEL
 		BEGIN
-		 IF (AddLabel(CurrentText, CurrentProcess, CurrentEntry+1, false, -1)=-1) THEN SyntaxError('Label already defined ('+CurrentText+') or too many labels');
+		 IF (AddLabel(CurrentText, CurrentProcess, CurrentEntry+1, false, -1)=-1) THEN  SyntaxError('Label already defined ('+CurrentText+') or too many labels');
 		 IF Verbose THEN WriteLn('Label '+CurrentText+' created at process #'+IntToStr(CurrentProcess)+', entry #', IntToStr(CurrentEntry+1),'.');
+		 Scan();
 		 Opcode := -1;
 		 CurrentCondact := CurrentCondact - 1; // Because we don't want the condact counter to increase because of a label
 		END ELSE
@@ -859,7 +854,6 @@ BEGIN
 		END;
 		CurrentCondact := CurrentCondact + 1;
 	UNTIL Opcode < 0;	
-	Result := HasJumps;
 END;	
 
 PROCEDURE ParseVerbNoun(var Verb: Longint; var  Noun: Longint);
@@ -930,7 +924,6 @@ VAR 	Verb, Noun : Longint;
 	VerbNouns : array of longint;
 	i : integer;
 	CurrentEntry : Word;
-	HasJumps : boolean;
 BEGIN
 	CurrentEntry := 0;
 	Scan(); // Get > sign, label,  or next process
@@ -957,9 +950,9 @@ BEGIN
 				Scan();
 			UNTIL CurrentTokenID<>T_PROCESS_ENTRY_SIGN;
 			EntryCondacts := nil;
-			HasJumps := ParseProcessCondacts(EntryCondacts, CurrentProcess, CurrentEntry);
+			ParseProcessCondacts(EntryCondacts, CurrentProcess, CurrentEntry);
 			// Dump condacts once per each synonym entry
-			for i:=0 to ((Length(VerbNouns) DIV 2) -1) DO AddProcessEntry(Processes[CurrentProcess].Entries, VerbNouns[i*2], VerbNouns[i*2+1], EntryCondacts, HasJumps);
+			for i:=0 to ((Length(VerbNouns) DIV 2) -1) DO AddProcessEntry(Processes[CurrentProcess].Entries, VerbNouns[i*2], VerbNouns[i*2+1], EntryCondacts);
 			CurrentEntry := CurrentEntry + (Length(VerbNouns) DIV 2);
 		END;
      END;
@@ -968,21 +961,18 @@ END;
 
 
 PROCEDURE ParsePRO();
-VAR CurrentProcess : Longint;
-	ProcNum : Longint;
+VAR ProcNum : Longint;
 BEGIN
  	InitializeProcesses();
-	CurrentProcess := 0;
-	ProcessCount := 0;
+	LastProcess := -1;
 	REPEAT
 		Scan();
 		IF (CurrentTokenID<>T_IDENTIFIER) AND (CurrentTokenID<>T_NUMBER) THEN SyntaxError('Process number expected but "'+CurrentText+'" found');
 		ProcNum := GetIdentifierValue();
 		IF (Procnum = MAXLONGINT) THEN SyntaxError('"' +CurrentText + '" is not defined');
-		IF ProcNum<>CurrentProcess THEN SyntaxError('Definition for process #' + IntToStr(CurrentProcess) + ' expected but process #' + IntToStr(ProcNum) + ' found');
-		ProcessCount := ProcessCount + 1;
-		ParseProcessEntries(CurrentProcess);
-    	Inc(CurrentProcess);
+		if (ProcNum > LastProcess) THEN LastProcess := ProcNum;
+		if (Processes[ProcNum].Entries <> nil) then Warning('Process #' + IntToStr(ProcNum) + ' already defined, concatenating entries');
+		ParseProcessEntries(ProcNum);
 	UNTIL CurrentTokenID = T_SECTION_END;
 END; 		
 
@@ -997,6 +987,7 @@ BEGIN
 	LTXCount := 0;
 	OTXCount := 0;
 	OtherTXCount := 0;
+	MTX2Count := 0;
 	Target := ATarget;
 	Subtarget := ASubtarget;
 	GlobalNestedIfdefCount := 0;
